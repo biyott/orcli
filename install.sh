@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# orcli installer — symlinks every tool in bin/ into ~/.local/bin
-# 심링크라 이후 `git pull`만으로 모든 도구가 최신으로 갱신된다.
+# orcli installer — copies every tool in bin/ into ~/.local/bin
+# 복사 방식이라 repo가 외장/이동/삭제돼도 설치된 도구는 독립적으로 동작한다.
+# 대신 repo 갱신(git pull) 뒤엔 이 스크립트를 다시 실행해야 최신본이 반영된다.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")" && pwd)"
@@ -12,11 +13,14 @@ for f in "$repo"/bin/*; do
   [ -f "$f" ] || continue
   name="$(basename "$f")"
   chmod +x "$f"
-  ln -sf "$f" "$target/$name"
-  echo "  installed  $target/$name -> $f"
+  rm -f "$target/$name"          # 기존 복사본/심링크 제거 후
+  cp "$f" "$target/$name"        # 독립 복사본으로 설치
+  chmod +x "$target/$name"
+  echo "  copied  $f  ->  $target/$name"
   n=$((n + 1))
 done
-echo "orcli: ${n}개 도구 설치 완료."
+echo "orcli: ${n}개 도구를 ~/.local/bin 에 복사했습니다."
+echo "       (repo 갱신 후엔 install.sh 를 다시 실행해 재복사하세요)"
 
 # PATH 확인
 case ":$PATH:" in

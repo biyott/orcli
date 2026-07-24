@@ -1,8 +1,8 @@
 # orcli 🐋
 
-> A small pod of personal command-line tools & configs. Symlink-install, `git pull` to update.
+> A small pod of personal command-line tools & configs. Copy-install into `~/.local/bin`.
 >
-> 개인용 CLI 도구·설정 모음. 심링크로 설치하고 `git pull`로 갱신한다. 이름은 **orca + cli**.
+> 개인용 CLI 도구·설정 모음. `~/.local/bin`으로 **복사 설치**한다. 이름은 **orca + cli**.
 
 ## Install
 
@@ -11,14 +11,15 @@ git clone https://github.com/biyott/orcli.git ~/dev/orcli
 ~/dev/orcli/install.sh
 ```
 
-`install.sh`가 `bin/` 안의 모든 실행파일을 `~/.local/bin`에 심링크한다.
+`install.sh`가 `bin/` 안의 모든 실행파일을 `~/.local/bin`에 **복사**한다(독립 복사본).
+그래서 repo가 외장 볼륨/다른 경로에 있거나 삭제돼도 설치된 도구는 그대로 동작한다.
 `~/.local/bin`이 `PATH`에 없으면 셸 설정에 추가하라고 안내한다:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Update: `cd ~/dev/orcli && git pull` (심링크라 즉시 반영).
+Update: `git pull` 후 **`install.sh` 재실행**(복사본이라 재복사해야 반영).
 Uninstall: `rm ~/.local/bin/<tool>`.
 
 ## Tools
