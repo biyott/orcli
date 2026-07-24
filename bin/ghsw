@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# ghsw — gh 계정을 골라서 전환.
+#   ghsw            대화형 선택 (fzf 있으면 fuzzy, 없으면 번호 메뉴)
+#   ghsw <번호>     목록 N번째로 바로 전환 (예: ghsw 2)
+#   ghsw <계정명>   그 계정으로 바로 전환 (예: ghsw smnoh_gsenc)
+#   ghsw -h|--help  도움말
+# (참고: `gh auth switch`도 인자 없이 대화형 선택기를 띄운다 — 이건 그 위의 얇은 래퍼)
+set -euo pipefail
+
+# 컬러 — stdout이 터미널일 때만(파이프·리다이렉트 시 plain)
+if [ -t 1 ]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; RST=$'\033[0m'
+  CYAN=$'\033[36m'; YEL=$'\033[33m'; GRN=$'\033[32m'; MAG=$'\033[35m'
+else
+  BOLD=; DIM=; RST=; CYAN=; YEL=; GRN=; MAG=
+fi
+
+# bash 3.2(macOS 기본) 호환 — mapfile 없이 read 루프로 배열 채움
+accounts=()
+while IFS= read -r line; do accounts+=("$line"); done < <(gh auth status 2>&1 | grep -oE 'account [A-Za-z0-9_-]+' | awk '{print $2}' | sort -u)
+active=$(gh auth status 2>&1 | grep -B2 'Active account: true' | grep -oE 'account [A-Za-z0-9_-]+' | awk '{print $2}' | head -1 || true)
+
+# 계정 목록 — 번호=시안, 활성엔 초록 ● 현재
+list_accounts() {
+  local i=1
+  for a in "${accounts[@]}"; do
+    if [ "$a" = "$active" ]; then
+      printf '     %s%d)%s %s%s%s  %s● 현재%s\n' "$CYAN" "$i" "$RST" "$BOLD" "$a" "$RST" "$GRN" "$RST"
+    else
+      printf '     %s%d)%s %s\n' "$CYAN" "$i" "$RST" "$a"
+    fi
+    i=$((i + 1))
+  done
+}
+
+# 구분선 (dim, 34칸)
+hr() { printf '   %s──────────────────────────────────%s\n' "$DIM" "$RST"; }
+
+usage() {
+  printf '\n'
+  printf '   %s%sghsw%s %s<명령>%s\n\n' "$BOLD" "$MAG" "$RST" "$CYAN" "$RST"
+  printf '   %s사용법%s\n' "$BOLD" "$RST"
+  hr
+  printf '     %sghsw%s          대화형 선택기로 전환\n' "$YEL" "$RST"
+  printf '     %sghsw %s<번호>%s   목록 번호로 바로 전환\n' "$YEL" "$CYAN" "$RST"
+  printf '     %sghsw %s<이름>%s   계정명으로 바로 전환\n' "$YEL" "$CYAN" "$RST"
+  printf '     %sghsw -h%s|%shelp%s  이 도움말\n' "$YEL" "$RST" "$YEL" "$RST"
+  if [ "${#accounts[@]}" -gt 0 ]; then
+    printf '\n   %s계정%s   %s(ghsw <번호>로 전환)%s\n' "$BOLD" "$RST" "$DIM" "$RST"
+    hr
+    list_accounts
+  fi
+  printf '\n'
+  hr
+  printf '   %sgh auth switch 래퍼 · ~/.local/bin/ghsw%s\n\n' "$DIM" "$RST"
+}
+
+case "${1:-}" in
+  -h|--help|help) usage; exit 0 ;;
+esac
+
+if [ "${#accounts[@]}" -eq 0 ]; then
+  echo "gh 로그인 계정 없음. 먼저 'gh auth login'." >&2
+  exit 1
+fi
+
+# 인자 해석: 번호 또는 계정명으로 바로 전환
+resolve_arg() {
+  local arg="$1"
+  if [[ "$arg" =~ ^[0-9]+$ ]]; then
+    local i=$((arg - 1))
+    if [ "$i" -lt 0 ] || [ "$i" -ge "${#accounts[@]}" ]; then
+      echo "범위 밖 번호: $arg (1~${#accounts[@]})" >&2; exit 1
+    fi
+    printf '%s' "${accounts[$i]}"
+    return
+  fi
+  for a in "${accounts[@]}"; do
+    if [ "$a" = "$arg" ]; then printf '%s' "$a"; return; fi
+  done
+  echo "그런 계정 없음: $arg" >&2
+  echo "가능: ${accounts[*]}" >&2
+  exit 1
+}
+
+chosen=""
+if [ "$#" -ge 1 ]; then
+  chosen=$(resolve_arg "$1")
+else
+  # 대화형 — 활성 계정엔 (현재) 표시
+  labels=()
+  for a in "${accounts[@]}"; do
+    if [ "$a" = "$active" ]; then labels+=("$a (현재)"); else labels+=("$a"); fi
+  done
+  if command -v fzf >/dev/null 2>&1; then
+    chosen=$(printf '%s\n' "${labels[@]}" | fzf --prompt="gh 계정 전환 > " --height=40% | awk '{print $1}')
+  else
+    echo "gh 계정 선택:"
+    select label in "${labels[@]}"; do
+      [ -n "${label:-}" ] && chosen=$(awk '{print $1}' <<<"$label") && break
+    done
+  fi
+fi
+
+[ -z "${chosen:-}" ] && { echo "선택 취소." >&2; exit 1; }
+if [ "$chosen" = "$active" ]; then
+  echo "이미 활성: $chosen"
+  exit 0
+fi
+gh auth switch --user "$chosen"
