@@ -11,15 +11,25 @@ git clone https://github.com/biyott/orcli.git ~/dev/orcli
 ~/dev/orcli/install.sh
 ```
 
-`install.sh`가 `bin/` 안의 모든 실행파일을 `~/.local/bin`에 **복사**한다(독립 복사본).
-그래서 repo가 외장 볼륨/다른 경로에 있거나 삭제돼도 설치된 도구는 그대로 동작한다.
+`install.sh`가 `bin/` 안의 모든 실행파일을 `~/.local/bin`에 설치한다. 방식은 **선택**한다:
+
+```bash
+install.sh --copy    # 복사본 설치 — repo 이동/삭제 무관, 갱신은 재실행 필요
+install.sh --link    # 심링크 설치 — git pull 로 즉시 반영, repo 위치 고정
+install.sh           # 터미널이면 물어봄(기본 복사), 비대화면 복사
+```
+
+| 방식 | repo 이동/삭제 | 갱신 |
+|------|----------------|------|
+| `--copy` | 자유(독립 복사본) | `git pull` 후 `install.sh` 재실행 |
+| `--link` | repo 위치 고정 | `git pull` 즉시 반영 |
+
 `~/.local/bin`이 `PATH`에 없으면 셸 설정에 추가하라고 안내한다:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Update: `git pull` 후 **`install.sh` 재실행**(복사본이라 재복사해야 반영).
 Uninstall: `rm ~/.local/bin/<tool>`.
 
 ## Tools
