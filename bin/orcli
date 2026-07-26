@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# orcli — 이 도구 모음(pod) 자체를 관리한다.
+#   orcli list        설치된 툴 + 한 줄 설명
+#   orcli update      repo 에서 git pull 후 install.sh 재실행(설치 방식 유지)
+#   orcli doctor      PATH·의존성·설치 상태 점검
+#   orcli root        repo 위치 출력
+#   orcli -h|--help   도움말
+set -euo pipefail
+
+if [ -t 1 ]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; RST=$'\033[0m'
+  CYAN=$'\033[36m'; YEL=$'\033[33m'; GRN=$'\033[32m'; MAG=$'\033[35m'; RED=$'\033[31m'
+else
+  BOLD=; DIM=; RST=; CYAN=; YEL=; GRN=; MAG=; RED=
+fi
+hr() { printf '   %s──────────────────────────────────%s\n' "$DIM" "$RST"; }
+
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/orcli"
+TARGET="$HOME/.local/bin"
+
+# repo 위치 찾기: 기록된 root → 심링크 추적 → 현재 repo
+find_root() {
+  if [ -f "$CONF/root" ]; then
+    local r; r="$(cat "$CONF/root")"; [ -d "$r/bin" ] && { printf '%s' "$r"; return; }
+  fi
+  local self="$0"
+  if command -v readlink >/dev/null 2>&1 && [ -L "$self" ]; then
+    local link; link="$(readlink "$self")"
+    case "$link" in /*) : ;; *) link="$(cd "$(dirname "$self")" && cd "$(dirname "$link")" && pwd)/$(basename "$link")" ;; esac
+    local r; r="$(cd "$(dirname "$link")/.." && pwd)"; [ -d "$r/bin" ] && { printf '%s' "$r"; return; }
+  fi
+  if git rev-parse --show-toplevel >/dev/null 2>&1; then
+    local r; r="$(git rev-parse --show-toplevel)"; [ -d "$r/bin" ] && { printf '%s' "$r"; return; }
+  fi
+  return 1
+}
+
+# 스크립트 2번째 줄(shebang 다음 주석)에서 설명 추출.  "name — desc" 형식이면 desc 만.
+desc_of() {
+  local ln; ln="$(awk 'NR==2 && /^#/ {sub(/^# */,""); print; exit}' "$1")"
+  case "$ln" in *"—"*) printf '%s' "${ln#*— }" ;; *) printf '%s' "$ln" ;; esac
+}
+
+usage() {
+  printf '\n   %s%sorcli%s %s· 도구 모음 관리%s\n\n' "$BOLD" "$MAG" "$RST" "$DIM" "$RST"
+  printf '   %s사용법%s\n' "$BOLD" "$RST"; hr
+  printf '     %sorcli list%s     설치된 툴 + 설명\n' "$YEL" "$RST"
+  printf '     %sorcli update%s   git pull 후 재설치(방식 유지)\n' "$YEL" "$RST"
+  printf '     %sorcli doctor%s   PATH·의존성·설치 점검\n' "$YEL" "$RST"
+  printf '     %sorcli root%s     repo 위치 출력\n' "$YEL" "$RST"
+  printf '     %sorcli -h%s       이 도움말\n' "$YEL" "$RST"
+  printf '\n'; hr
+  printf '   %sgithub.com/biyott/orcli%s\n\n' "$DIM" "$RST"
+}
+
+cmd_list() {
+  local root; root="$(find_root)" || { echo "repo 를 못 찾음 — install.sh 를 한 번 실행하세요." >&2; exit 1; }
+  local mode="?"; [ -f "$CONF/mode" ] && mode="$(cat "$CONF/mode")"
+  printf '\n   %s도구%s   %s(설치: %s · %s)%s\n' "$BOLD" "$RST" "$DIM" "$mode" "$root" "$RST"; hr
+  local f name mark
+  for f in "$root"/bin/*; do
+    [ -f "$f" ] || continue
+    name="$(basename "$f")"
+    if [ -e "$TARGET/$name" ]; then mark="${GRN}✓${RST}"; else mark="${DIM}·${RST}"; fi
+    printf '     %s %s%-10s%s %s%s%s\n' "$mark" "$CYAN" "$name" "$RST" "$DIM" "$(desc_of "$f")" "$RST"
+  done
+  printf '\n'
+}
+
+cmd_update() {
+  local root; root="$(find_root)" || { echo "repo 를 못 찾음." >&2; exit 1; }
+  local mode=""; [ -f "$CONF/mode" ] && mode="$(cat "$CONF/mode")"
+  printf '   %sgit pull%s  (%s)\n' "$DIM" "$RST" "$root"
+  git -C "$root" pull --ff-only
+  if [ -n "$mode" ]; then "$root/install.sh" "--$mode"; else "$root/install.sh"; fi
+}
+
+cmd_doctor() {
+  local root; root="$(find_root)" || echo "   ${RED}✗${RST} repo 위치 미확인 (install.sh 실행 필요)"
+  printf '\n   %s진단%s\n' "$BOLD" "$RST"; hr
+  # PATH
+  case ":$PATH:" in
+    *":$TARGET:"*) printf '     %s✓%s PATH 에 %s 있음\n' "$GRN" "$RST" "$TARGET" ;;
+    *) printf '     %s✗%s PATH 에 %s 없음 — rc 에 추가:  export PATH="$HOME/.local/bin:$PATH"\n' "$RED" "$RST" "$TARGET" ;;
+  esac
+  # 의존성
+  local dep
+  for dep in git gh fzf lsof; do
+    if command -v "$dep" >/dev/null 2>&1; then
+      printf '     %s✓%s %s\n' "$GRN" "$RST" "$dep"
+    else
+      case "$dep" in
+        git)  printf '     %s✗%s git 없음 (wt·gitundo 필수)\n' "$RED" "$RST" ;;
+        gh)   printf '     %s·%s gh 없음 (ghsw 필수)\n' "$YEL" "$RST" ;;
+        fzf)  printf '     %s·%s fzf 없음 (대화형 선택 향상, 선택)\n' "$DIM" "$RST" ;;
+        lsof) command -v ss >/dev/null 2>&1 && printf '     %s·%s lsof 없음 — ss 로 대체(ports)\n' "$DIM" "$RST" || printf '     %s✗%s lsof/ss 둘 다 없음 (ports 동작 불가)\n' "$RED" "$RST" ;;
+      esac
+    fi
+  done
+  # 설치 상태
+  if [ -n "${root:-}" ] && [ -d "$root/bin" ]; then
+    local f name miss=0
+    for f in "$root"/bin/*; do
+      [ -f "$f" ] || continue; name="$(basename "$f")"
+      [ -e "$TARGET/$name" ] || { printf '     %s·%s %s 미설치 — orcli update\n' "$YEL" "$RST" "$name"; miss=1; }
+    done
+    [ "$miss" = 0 ] && printf '     %s✓%s 모든 툴 설치됨\n' "$GRN" "$RST"
+  fi
+  printf '\n'
+}
+
+case "${1:-}" in
+  list|ls)       cmd_list ;;
+  update|up)     cmd_update ;;
+  doctor|dr)     cmd_doctor ;;
+  root)          find_root || { echo "repo 미확인" >&2; exit 1; }; echo ;;
+  -h|--help|help|"") usage ;;
+  *) echo "알 수 없는 명령: $1  (list|update|doctor|root|-h)" >&2; exit 1 ;;
+esac

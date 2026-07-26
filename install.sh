@@ -4,6 +4,7 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "$0")" && pwd)"
 target="$HOME/.local/bin"
+conf="${XDG_CONFIG_HOME:-$HOME/.config}/orcli"
 
 # colors — only when stdout is a terminal (plain when piped/redirected)
 if [ -t 1 ]; then
@@ -77,6 +78,11 @@ for f in "$repo"/bin/*; do
   n=$((n + 1))
 done
 
+# record repo root + mode so `orcli update`/`orcli list` can find the source
+mkdir -p "$conf"
+printf '%s\n' "$repo" > "$conf/root"
+printf '%s\n' "$mode" > "$conf/mode"
+
 if [ "$mode" = link ]; then
   printf '\n   %sorcli%s  %d tool(s) symlinked · %sgit pull%s updates them instantly\n' "$BOLD" "$RST" "$n" "$DIM" "$RST"
 else
@@ -94,5 +100,6 @@ esac
 
 # optional deps
 command -v gh  >/dev/null 2>&1 || printf '   %s· ghsw needs GitHub CLI (gh): https://cli.github.com%s\n' "$DIM" "$RST"
-command -v fzf >/dev/null 2>&1 || printf '   %s· fzf enables ghsw fuzzy picker (optional)%s\n' "$DIM" "$RST"
+command -v fzf >/dev/null 2>&1 || printf '   %s· fzf enables fuzzy pickers across the pod (optional)%s\n' "$DIM" "$RST"
+{ command -v lsof || command -v ss; } >/dev/null 2>&1 || printf '   %s· ports needs lsof or ss%s\n' "$DIM" "$RST"
 printf '\n'
