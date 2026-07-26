@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# sshsw — ~/.ssh/config 의 Host 를 골라서 접속한다.
-#   sshsw                 대화형으로 Host 골라 접속
-#   sshsw <검색어>        매칭되는 Host 로 접속 (예: sshsw web)
+# sshsw — ssh config 의 Host 를 골라서 접속한다.  WSL 이면 Windows 쪽 config 도 자동 병합.
+#   sshsw                 대화형으로 Host 골라 접속 (wsl·win 그룹으로 구분 표시)
+#   sshsw <검색어>        매칭되는 Host 로 접속
 #   sshsw <검색어> -- ...  이후 인자는 ssh 에 그대로 넘김
-#   sshsw ls              Host 목록
+#   sshsw ls              Host 목록 (출처 태그 포함)
+#   sshsw --wsl | --win   한쪽 config 만 사용
 #   sshsw -h|--help       도움말
-# Include 지시자는 따라가지 않는다 — 메인 config 의 Host 별칭만 읽는다.
+# WSL 감지 시 Windows 사용자 ~/.ssh/config 를 자동으로 찾아(넣지 않아도 됨) 목록에 합친다.
+# 접속은 그 Host 의 출처에 맞는 ssh 로: wsl→ssh, win→ssh.exe(있으면) / 없으면 ssh -F <win config>.
 set -euo pipefail
 
 if [ -t 1 ]; then
@@ -14,82 +16,178 @@ if [ -t 1 ]; then
 else
   BOLD=; DIM=; RST=; CYAN=; YEL=; GRN=; MAG=
 fi
-hr() { printf '   %s──────────────────────────────────%s\n' "$DIM" "$RST"; }
+hr()  { printf '   %s──────────────────────────────────%s\n' "$DIM" "$RST"; }
+sep() { printf '%s───── %s ─────%s' "$DIM" "$1" "$RST"; }
 
-CFG="${HOME}/.ssh/config"
+is_wsl() { [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; }
 
-# 와일드카드 아닌 Host 별칭을, 나온 순서대로 중복 없이.
-list_hosts() {
-  [ -f "$CFG" ] || return 0
-  awk 'tolower($1)=="host" { for(i=2;i<=NF;i++) if($i !~ /[*?!]/) print $i }' "$CFG" | awk '!seen[$0]++'
+# Windows 사용자 ~/.ssh/config 경로를 자동으로 찾는다 (없으면 1).
+find_win_config() {
+  # 1) 명시 지정(예비수단)
+  if [ -n "${SSHSW_WIN_CONFIG:-}" ]; then [ -f "$SSHSW_WIN_CONFIG" ] && { printf '%s' "$SSHSW_WIN_CONFIG"; return 0; }; return 1; fi
+  # 2) interop 있으면 USERPROFILE 로 정확히
+  if command -v cmd.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1; then
+    local up p
+    up=$(cd /mnt/c 2>/dev/null && cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')
+    if [ -n "$up" ]; then p="$(wslpath -u "$up" 2>/dev/null)/.ssh/config"; [ -f "$p" ] && { printf '%s' "$p"; return 0; }; fi
+  fi
+  # 3) interop 없으면 /mnt/c/Users 휴리스틱 — 실사용자(NTUSER.DAT)만, 예약 이름 제외
+  local d n
+  for d in /mnt/c/Users/*/; do
+    n=$(basename "$d")
+    case "$n" in "All Users"|Default|"Default User"|Public|desktop.ini|WsiAccount) continue ;; esac
+    [ -f "$d/NTUSER.DAT" ] || continue
+    [ -f "$d/.ssh/config" ] && { printf '%s' "$d/.ssh/config"; return 0; }
+  done
+  return 1
 }
+
+# config 에서 와일드카드 아닌 Host 별칭을, 순서대로 중복 없이 (CRLF 제거).
+hosts_of() {
+  local cfg="$1"; [ -f "$cfg" ] || return 0
+  awk '{sub(/\r$/,"")} tolower($1)=="host"{for(i=2;i<=NF;i++) if($i !~ /[*?!]/) print $i}' "$cfg" | awk '!seen[$0]++'
+}
+
+# ── 엔트리 테이블 (병렬 배열) ───────────────────────────────
+E_host=(); E_src=(); E_bin=(); E_fconf=()
+add_entries() {   # label cfg bin fconf
+  local label="$1" cfg="$2" bin="$3" fc="$4" h
+  while IFS= read -r h; do
+    [ -n "$h" ] && { E_host+=("$h"); E_src+=("$label"); E_bin+=("$bin"); E_fconf+=("$fc"); }
+  done < <(hosts_of "$cfg")
+}
+
+# ── 인자 파싱 ──────────────────────────────────────────────
+query=""; sshargs=(); rest=0; posset=0; ONLY=""
+while [ "$#" -gt 0 ]; do
+  if [ "$rest" = 1 ]; then sshargs+=("$1"); shift; continue; fi
+  case "$1" in
+    -h|--help|help) HELP=1 ;;
+    ls|list) LS=1 ;;
+    --wsl) ONLY=wsl ;;
+    --win) ONLY=win ;;
+    --) rest=1 ;;
+    -*) sshargs+=("$1") ;;
+    *)  if [ "$posset" = 0 ]; then query="$1"; posset=1; else sshargs+=("$1"); fi ;;
+  esac
+  shift
+done
+
+# ── 소스 구성 → 엔트리 채우기 ─────────────────────────────
+WIN_FALLBACK=0; WIN_PRESENT=0
+[ "$ONLY" != win ] && add_entries wsl "$HOME/.ssh/config" ssh ""
+if [ "$ONLY" != wsl ] && is_wsl; then
+  wincfg="$(find_win_config || true)"
+  if [ -n "${wincfg:-}" ] && [ -f "$wincfg" ]; then
+    WIN_PRESENT=1
+    if command -v ssh.exe >/dev/null 2>&1; then
+      add_entries win "$wincfg" ssh.exe ""
+    else
+      WIN_FALLBACK=1
+      add_entries win "$wincfg" ssh "$wincfg"
+    fi
+  fi
+fi
+
+# 소스가 실제로 둘 이상일 때만 그룹 구분/태그를 쓴다.
+# (Mac/Linux, 또는 WSL이지만 Windows config 없음 → 평범한 단일 목록)
+MULTI=0
+if [ "${#E_src[@]}" -gt 0 ]; then
+  first="${E_src[0]}"
+  for s in "${E_src[@]}"; do [ "$s" != "$first" ] && { MULTI=1; break; }; done
+fi
 
 usage() {
   printf '\n   %s%ssshsw%s %s<명령>%s\n\n' "$BOLD" "$MAG" "$RST" "$CYAN" "$RST"
   printf '   %s사용법%s\n' "$BOLD" "$RST"; hr
   printf '     %ssshsw%s            골라서 접속\n' "$YEL" "$RST"
   printf '     %ssshsw %s<검색어>%s   매칭 Host 로 접속\n' "$YEL" "$CYAN" "$RST"
-  printf '     %ssshsw ls%s         Host 목록\n' "$YEL" "$RST"
+  printf '     %ssshsw ls%s         Host 목록(출처 태그)\n' "$YEL" "$RST"
+  printf '     %ssshsw --wsl%s|%s--win%s  한쪽 config 만\n' "$YEL" "$RST" "$YEL" "$RST"
   printf '     %ssshsw -h%s         이 도움말\n' "$YEL" "$RST"
   printf '     %s· <검색어> 뒤 %s--%s 이후는 ssh 로 전달%s\n' "$DIM" "$RST" "$DIM" "$RST"
-  hosts=(); while IFS= read -r h; do hosts+=("$h"); done < <(list_hosts)
-  if [ "${#hosts[@]}" -gt 0 ]; then
-    printf '\n   %sHost%s   %s(%s)%s\n' "$BOLD" "$RST" "$DIM" "$CFG" "$RST"; hr
-    local i=1
-    for h in "${hosts[@]}"; do printf '     %s%d)%s %s\n' "$CYAN" "$i" "$RST" "$h"; i=$((i+1)); done
-  fi
+  is_wsl && [ "${WIN_PRESENT:-0}" = 1 ] && printf '   %sWSL — Windows ~/.ssh/config 자동 병합됨%s\n' "$DIM" "$RST"
   printf '\n'; hr
-  printf '   %sssh %s%s 래퍼%s\n\n' "$DIM" "$CFG" "" "$RST"
+  printf '   %sssh + (WSL 시) ssh.exe 래퍼%s\n\n' "$DIM" "$RST"
+}
+[ "${HELP:-0}" = 1 ] && { usage; exit 0; }
+
+# 그룹 구분선 포함 목록 출력
+print_grouped() {   # 엔트리 인덱스들
+  local prev="" i
+  for i in "$@"; do
+    if [ "$MULTI" = 1 ] && [ "${E_src[$i]}" != "$prev" ]; then prev="${E_src[$i]}"; printf '   %s\n' "$(sep "$prev")"; fi
+    printf '     %s%s%s\n' "$CYAN" "${E_host[$i]}" "$RST"
+  done
 }
 
-# 인자 파싱: 플래그 / 검색어 / -- 이후 ssh 인자
-query=""; sshargs=(); rest=0
-posset=0
-while [ "$#" -gt 0 ]; do
-  if [ "$rest" = 1 ]; then sshargs+=("$1"); shift; continue; fi
-  case "$1" in
-    -h|--help|help) usage; exit 0 ;;
-    ls|list) LS=1 ;;
-    --) rest=1 ;;
-    -*) sshargs+=("$1") ;;                 # -p 22 같은 ssh 옵션은 그대로
-    *)  if [ "$posset" = 0 ]; then query="$1"; posset=1; else sshargs+=("$1"); fi ;;
-  esac
-  shift
-done
-
-hosts=(); while IFS= read -r h; do hosts+=("$h"); done < <(list_hosts)
-
 if [ "${LS:-0}" = 1 ]; then
-  [ "${#hosts[@]}" -eq 0 ] && { echo "config 에 Host 없음: $CFG" >&2; exit 1; }
+  [ "${#E_host[@]}" -eq 0 ] && { echo "config 에 Host 없음." >&2; exit 1; }
   printf '\n   %sHost%s\n' "$BOLD" "$RST"; hr
-  for h in "${hosts[@]}"; do printf '     %s\n' "$h"; done; printf '\n'
-  exit 0
+  all=(); for i in "${!E_host[@]}"; do all+=("$i"); done
+  print_grouped "${all[@]}"
+  [ "$WIN_FALLBACK" = 1 ] && printf '\n   %s※ win Host 는 ssh.exe 가 없어 WSL ssh -F 로 접속 시도 — 키 문제 가능%s\n' "$DIM" "$RST"
+  printf '\n'; exit 0
 fi
 
-[ "${#hosts[@]}" -eq 0 ] && { echo "~/.ssh/config 에 Host 가 없다." >&2; exit 1; }
+[ "${#E_host[@]}" -eq 0 ] && { echo "ssh config 에 Host 가 없다 (~/.ssh/config${WSL_DISTRO_NAME:+ · Windows 쪽도 확인})." >&2; exit 1; }
 
-# 검색어 → Host 하나
-choose_host() {
-  local q="$1" h hits=()
-  if [ -n "$q" ]; then
-    for h in "${hosts[@]}"; do [ "$h" = "$q" ] && { printf '%s' "$h"; return; } done
-    for h in "${hosts[@]}"; do case "$h" in *"$q"*) hits+=("$h") ;; esac; done
-    [ "${#hits[@]}" -eq 1 ] && { printf '%s' "${hits[0]}"; return; }
-    [ "${#hits[@]}" -eq 0 ] && { echo "매칭 Host 없음: $q" >&2; return 1; }
-  else
-    hits=("${hosts[@]}")
-  fi
-  local chosen
+# 검색어 → 후보 인덱스 (정확 매칭 우선, 없으면 부분 매칭)
+candidates=()
+if [ -n "$query" ]; then
+  exact=(); subm=()
+  for i in "${!E_host[@]}"; do
+    [ "${E_host[$i]}" = "$query" ] && exact+=("$i")
+    case "${E_host[$i]}" in *"$query"*) subm+=("$i") ;; esac
+  done
+  if [ "${#exact[@]}" -gt 0 ]; then candidates=("${exact[@]}"); else candidates=("${subm[@]}"); fi
+  [ "${#candidates[@]}" -eq 0 ] && { echo "매칭 Host 없음: $query" >&2; exit 1; }
+else
+  for i in "${!E_host[@]}"; do candidates+=("$i"); done
+fi
+
+# 후보가 하나면 바로, 여럿이면 선택기
+choose() {   # 후보 인덱스들 → 선택된 인덱스
+  local idxs=("$@") chosen prev i sel k
   if command -v fzf >/dev/null 2>&1; then
-    chosen=$(printf '%s\n' "${hits[@]}" | fzf --prompt="ssh > " --height=40%) || return 1
+    while :; do
+      sel=$(
+        prev=""
+        for i in "${idxs[@]}"; do
+          if [ "$MULTI" = 1 ] && [ "${E_src[$i]}" != "$prev" ]; then prev="${E_src[$i]}"; printf '%s\t%s\n' "-" "$(sep "$prev")"; fi
+          printf '%s\t  %s%s\n' "$i" "${E_host[$i]}" ""
+        done | fzf --ansi --with-nth=2.. --nth=2.. --delimiter='\t' --prompt="ssh > " --height=50%
+      ) || return 1
+      k=$(printf '%s' "$sel" | cut -f1)
+      [ "$k" != "-" ] && { chosen="$k"; break; }   # 구분선 고르면 무시하고 다시
+    done
   else
-    local sel PS3="Host 번호> "
-    select sel in "${hits[@]}"; do [ -n "${sel:-}" ] && { chosen="$sel"; break; }; done
+    printf '\n   %sHost%s  %s(번호로 선택)%s\n' "$BOLD" "$RST" "$DIM" "$RST"; hr
+    local n=1; map=(); prev=""
+    for i in "${idxs[@]}"; do
+      if [ "$MULTI" = 1 ] && [ "${E_src[$i]}" != "$prev" ]; then prev="${E_src[$i]}"; printf '   %s\n' "$(sep "$prev")"; fi
+      printf '     %s%d)%s %s\n' "$CYAN" "$n" "$RST" "${E_host[$i]}"; map[$n]="$i"; n=$((n+1))
+    done
+    printf '   번호> '; read -r num
+    case "${num:-}" in ''|*[!0-9]*) return 1 ;; esac
+    [ -n "${map[$num]:-}" ] || return 1
+    chosen="${map[$num]}"
   fi
-  [ -z "${chosen:-}" ] && return 1
   printf '%s' "$chosen"
 }
 
-host="$(choose_host "$query")" || { echo "취소." >&2; exit 1; }
-printf '   %s→ ssh %s%s%s\n' "$GRN" "$BOLD" "$host" "$RST"
-if [ "${#sshargs[@]}" -gt 0 ]; then exec ssh "$host" "${sshargs[@]}"; else exec ssh "$host"; fi
+if [ "${#candidates[@]}" -eq 1 ]; then
+  idx="${candidates[0]}"
+else
+  idx="$(choose "${candidates[@]}")" || { echo "취소." >&2; exit 1; }
+fi
+
+host="${E_host[$idx]}"; src="${E_src[$idx]}"; bin="${E_bin[$idx]}"; fc="${E_fconf[$idx]}"
+printf '   %s→ %s %s%s%s %s(%s)%s\n' "$GRN" "$bin" "$BOLD" "$host" "$RST" "$DIM" "$src" "$RST"
+[ -n "$fc" ] && printf '   %s※ Windows config 를 WSL ssh 로 사용 — 키 경로/권한 때문에 실패할 수 있음%s\n' "$DIM" "$RST"
+
+if [ -n "$fc" ]; then
+  if [ "${#sshargs[@]}" -gt 0 ]; then exec "$bin" -F "$fc" "$host" "${sshargs[@]}"; else exec "$bin" -F "$fc" "$host"; fi
+else
+  if [ "${#sshargs[@]}" -gt 0 ]; then exec "$bin" "$host" "${sshargs[@]}"; else exec "$bin" "$host"; fi
+fi

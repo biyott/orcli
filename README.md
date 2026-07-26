@@ -126,10 +126,23 @@ prco -w [번호]  PR 을 새 worktree 로 가져와 진입 (현재 브랜치 안
 ```
 sshsw            골라서 접속
 sshsw <검색어>   매칭 Host 로 접속
-sshsw ls         Host 목록
+sshsw ls         Host 목록 (출처 태그)
+sshsw --wsl|--win  한쪽 config 만 사용
 ```
 
-`~/.ssh/config`의 `Host` 별칭을 읽어 고른 뒤 `ssh`로 접속한다(와일드카드 `*`·`?` 패턴은 제외). `sshsw <검색어> -- <ssh 인자>`로 뒤 인자를 그대로 넘길 수 있다. `Include`는 따라가지 않는다. 이미 `fzf` 셸 통합(`ssh **<TAB>`)이나 `sshs` 같은 도구가 같은 일을 하므로, 이 툴의 가치는 orcli pod 안의 **일관된 UX**와 fzf 없이도 되는 자기완결성이다.
+`~/.ssh/config`의 `Host` 별칭을 읽어 고른 뒤 `ssh`로 접속한다(와일드카드 `*`·`?` 제외). `sshsw <검색어> -- <ssh 인자>`로 뒤 인자를 그대로 넘긴다. `Include`는 따라가지 않는다.
+
+**WSL 자동 병합.** WSL에서 실행하면 Windows 사용자의 `~/.ssh/config`를 **자동으로 찾아**(NTUSER.DAT로 실사용자 판별, interop 있으면 `%USERPROFILE%`로 정확히) 같은 목록에 합친다 — 설정 파일에 손댈 필요 없다. 출처가 둘이면 이렇게 그룹으로 구분해 보여준다:
+
+```
+───── wsl ─────
+  devbox
+───── win ─────
+  web-prod
+  db-1
+```
+
+출처가 하나뿐이면(맥·리눅스, 또는 WSL이지만 Windows config 없음) **구분선·태그 없이 평범한 단일 목록**이다. 접속은 출처에 맞는 ssh로: `wsl`→`ssh`, `win`→`ssh.exe`(interop 있을 때) / 없으면 `ssh -F <win config>`로 시도하며 키 경로·권한 문제 가능성을 안내한다. 자동탐색이 어긋나면 `SSHSW_WIN_CONFIG`로 지정할 수 있다(예비수단).
 
 ### `scratch`
 
