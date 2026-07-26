@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# ports — 리스닝 중인 포트를 점유한 프로세스를 보고, 골라서 종료한다.
+#   ports            대화형: 리스닝 포트 목록 → 골라서 kill (확인)
+#   ports <포트>     그 포트를 점유한 프로세스 표시 → kill (확인)
+#   ports ls|list    목록만 (kill 안 함)
+#   ports -9 ...     SIGKILL 로 종료 (기본 SIGTERM)
+#   ports -y ...     확인 없이 종료
+#   ports -h|--help  도움말
+# lsof 를 우선 쓰고 없으면 ss 로 대체한다 (macOS·Linux 공용).
+set -euo pipefail
+
+if [ -t 1 ]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; RST=$'\033[0m'
+  CYAN=$'\033[36m'; YEL=$'\033[33m'; GRN=$'\033[32m'; MAG=$'\033[35m'; RED=$'\033[31m'
+else
+  BOLD=; DIM=; RST=; CYAN=; YEL=; GRN=; MAG=; RED=
+fi
+hr() { printf '   %s──────────────────────────────────%s\n' "$DIM" "$RST"; }
+
+SIG=TERM
+YES=0
+posargs=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help|help) HELP=1 ;;
+    -9|--kill) SIG=KILL ;;
+    -y|--yes)  YES=1 ;;
+    -*) echo "알 수 없는 옵션: $1" >&2; exit 1 ;;
+    *)  posargs+=("$1") ;;
+  esac
+  shift
+done
+
+usage() {
+  printf '\n   %s%sports%s %s<명령>%s\n\n' "$BOLD" "$MAG" "$RST" "$CYAN" "$RST"
+  printf '   %s사용법%s\n' "$BOLD" "$RST"; hr
+  printf '     %sports%s          골라서 종료(대화형)\n' "$YEL" "$RST"
+  printf '     %sports %s<포트>%s   그 포트 프로세스 종료\n' "$YEL" "$CYAN" "$RST"
+  printf '     %sports ls%s       목록만\n' "$YEL" "$RST"
+  printf '     %sports -9%s       SIGKILL %s(기본 TERM)%s\n' "$YEL" "$RST" "$DIM" "$RST"
+  printf '     %sports -y%s       확인 없이 종료\n' "$YEL" "$RST"
+  printf '     %sports -h%s       이 도움말\n' "$YEL" "$RST"
+  printf '\n'; hr
+  printf '   %slsof/ss 래퍼 · 종료는 되돌릴 수 없음%s\n\n' "$DIM" "$RST"
+}
+[ "${HELP:-0}" = 1 ] && { usage; exit 0; }
+
+# 리스닝 소켓을 "포트\tPID\t명령" TSV 로.  포트 오름차순, 중복 제거.
+raw_rows() {
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR>1 { for(i=NF;i>=1;i--) if ($i ~ /:[0-9]+$/) { p=$i; sub(/.*:/,"",p); print p"\t"$2"\t"$1; break } }'
+  elif command -v ss >/dev/null 2>&1; then
+    ss -tlnpH 2>/dev/null | while IFS= read -r line; do
+      addr=$(printf '%s' "$line" | awk '{print $4}'); port="${addr##*:}"
+      pid=$(printf '%s' "$line" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
+      cmd=$(printf '%s' "$line" | grep -oE 'users:\(\("[^"]+' | head -1 | sed 's/.*"//')
+      [ -n "$port" ] && printf '%s\t%s\t%s\n' "$port" "${pid:-?}" "${cmd:-?}"
+    done
+  else
+    echo "__NOTOOL__"
+  fi
+}
+collect() { raw_rows | sort -t"$(printf '\t')" -k1,1n -u; }
+
+rows=()
+while IFS= read -r r; do
+  [ "$r" = "__NOTOOL__" ] && { echo "lsof 도 ss 도 없음 — 포트 조회 불가." >&2; exit 1; }
+  [ -n "$r" ] && rows+=("$r")
+done < <(collect)
+
+# ls/list — 목록만
+if [ "${posargs[*]:-}" = "ls" ] || [ "${posargs[*]:-}" = "list" ]; then
+  [ "${#rows[@]}" -eq 0 ] && { echo "리스닝 중인 포트 없음."; exit 0; }
+  printf '\n   %s포트%s   %sPID%s   %s프로세스%s\n' "$BOLD" "$RST" "$BOLD" "$RST" "$BOLD" "$RST"; hr
+  for r in "${rows[@]}"; do
+    printf '     %s%-7s%s %s%-8s%s %s\n' "$CYAN" "$(printf '%s' "$r" | cut -f1)" "$RST" "$DIM" "$(printf '%s' "$r" | cut -f2)" "$RST" "$(printf '%s' "$r" | cut -f3)"
+  done
+  printf '\n'; exit 0
+fi
+
+# 특정 포트 필터
+if [ "${#posargs[@]}" -ge 1 ]; then
+  want="${posargs[0]}"
+  filtered=()
+  for r in "${rows[@]}"; do [ "$(printf '%s' "$r" | cut -f1)" = "$want" ] && filtered+=("$r"); done
+  rows=("${filtered[@]}")
+  [ "${#rows[@]}" -eq 0 ] && { echo "포트 $want 을 리스닝하는 프로세스 없음." >&2; exit 1; }
+fi
+
+show_row() { printf '     %s%-7s%s %s%-8s%s %s\n' "$CYAN" "$(printf '%s' "$1" | cut -f1)" "$RST" "$DIM" "$(printf '%s' "$1" | cut -f2)" "$RST" "$(printf '%s' "$1" | cut -f3)"; }
+
+[ "${#rows[@]}" -eq 0 ] && { echo "리스닝 중인 포트 없음."; exit 0; }
+
+# 종료 대상 선택
+chosen=()
+if [ "${#posargs[@]}" -ge 1 ]; then
+  chosen=("${rows[@]}")     # 포트 지정 → 그 포트의 모든 pid
+else
+  labels=()
+  for r in "${rows[@]}"; do labels+=("$(printf '%s\t%s\t%s' "$(printf '%s' "$r" | cut -f1)" "$(printf '%s' "$r" | cut -f2)" "$(printf '%s' "$r" | cut -f3)")"); done
+  if command -v fzf >/dev/null 2>&1; then
+    sel=$(printf '%s\n' "${labels[@]}" | fzf --multi --with-nth=1,2,3 --delimiter='\t' --prompt="kill 할 포트(TAB 다중) > " --height=40%) || { echo "취소."; exit 0; }
+    while IFS= read -r s; do chosen+=("$s"); done <<<"$sel"
+  else
+    printf '\n   %s포트%s   %sPID%s   %s프로세스%s\n' "$BOLD" "$RST" "$BOLD" "$RST" "$BOLD" "$RST"; hr
+    menu=()
+    for r in "${rows[@]}"; do menu+=("$(printf '%s (pid %s, %s)' "$(printf '%s' "$r" | cut -f1)" "$(printf '%s' "$r" | cut -f2)" "$(printf '%s' "$r" | cut -f3)")"); done
+    PS3="종료할 포트 번호> "
+    select m in "${menu[@]}"; do [ -n "${m:-}" ] && { chosen=("${rows[$((REPLY-1))]}"); break; }; done
+  fi
+fi
+
+[ "${#chosen[@]}" -eq 0 ] && { echo "선택 없음."; exit 0; }
+
+printf '\n   %s다음을 SIG%s 로 종료:%s\n' "$RED" "$SIG" "$RST"
+for r in "${chosen[@]}"; do show_row "$r"; done
+if [ "$YES" != 1 ]; then
+  printf '   진행하려면 %syes%s 입력: ' "$YEL" "$RST"; read -r ans
+  [ "$ans" = "yes" ] || { echo "취소."; exit 0; }
+fi
+for r in "${chosen[@]}"; do
+  pid="$(printf '%s' "$r" | cut -f2)"
+  [ "$pid" = "?" ] && { echo "   PID 알 수 없음 (권한? sudo 필요할 수 있음)" >&2; continue; }
+  if kill "-$SIG" "$pid" 2>/dev/null; then
+    printf '   %s✓%s pid %s 종료(SIG%s)\n' "$GRN" "$RST" "$pid" "$SIG"
+  else
+    printf '   %s✗%s pid %s 실패 — 권한 부족이면 sudo\n' "$RED" "$RST" "$pid"
+  fi
+done

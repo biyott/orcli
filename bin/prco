@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# prco — 열린 PR 을 골라서 체크아웃한다 (GitHub CLI).
+#   prco            열린 PR 목록에서 골라 체크아웃
+#   prco <번호>     그 PR 을 바로 체크아웃
+#   prco -w [번호]  PR 을 새 worktree 로 가져와 진입 (현재 브랜치 안 건드림)
+#   prco -h|--help  도움말
+# 목록/체크아웃은 gh 가 처리한다. -w 는 GitHub 의 pull/<N>/head 를 origin 에서 받아온다.
+set -euo pipefail
+
+if [ -t 1 ]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; RST=$'\033[0m'
+  CYAN=$'\033[36m'; YEL=$'\033[33m'; GRN=$'\033[32m'; MAG=$'\033[35m'
+else
+  BOLD=; DIM=; RST=; CYAN=; YEL=; GRN=; MAG=
+fi
+hr() { printf '   %s──────────────────────────────────%s\n' "$DIM" "$RST"; }
+
+usage() {
+  printf '\n   %s%sprco%s %s<명령>%s\n\n' "$BOLD" "$MAG" "$RST" "$CYAN" "$RST"
+  printf '   %s사용법%s\n' "$BOLD" "$RST"; hr
+  printf '     %sprco%s            골라서 체크아웃\n' "$YEL" "$RST"
+  printf '     %sprco %s<번호>%s     그 PR 체크아웃\n' "$YEL" "$CYAN" "$RST"
+  printf '     %sprco -w %s[번호]%s   새 worktree 로 가져와 진입\n' "$YEL" "$CYAN" "$RST"
+  printf '     %sprco -h%s         이 도움말\n' "$YEL" "$RST"
+  printf '\n'; hr
+  printf '   %sgh pr 래퍼 · gh 로그인 필요%s\n\n' "$DIM" "$RST"
+}
+
+WT=0; num=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help|help) usage; exit 0 ;;
+    -w|--worktree) WT=1 ;;
+    -*) echo "알 수 없는 옵션: $1" >&2; exit 1 ;;
+    *) num="$1" ;;
+  esac
+  shift
+done
+
+command -v gh >/dev/null 2>&1 || { echo "gh(GitHub CLI) 가 필요하다: https://cli.github.com" >&2; exit 1; }
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "git repo 안이 아님." >&2; exit 1; }
+
+# 번호 미지정 → 목록에서 선택 (gh 내장 jq 로 TSV)
+if [ -z "$num" ]; then
+  rows=()
+  while IFS= read -r line; do [ -n "$line" ] && rows+=("$line"); done < <(
+    gh pr list --limit 50 --json number,title,headRefName,author \
+      -q '.[] | [.number, .title, .headRefName, .author.login] | @tsv' 2>/dev/null
+  )
+  [ "${#rows[@]}" -eq 0 ] && { echo "열린 PR 이 없거나 gh 에서 못 읽음."; exit 0; }
+  if command -v fzf >/dev/null 2>&1; then
+    sel=$(printf '%s\n' "${rows[@]}" | fzf --with-nth=1,2,3,4 --delimiter='\t' \
+           --prompt="PR > " --height=50% --preview 'echo {}' ) || { echo "취소."; exit 1; }
+  else
+    printf '\n   %sPR%s   %s제목 · 브랜치 · 작성자%s\n' "$BOLD" "$RST" "$DIM" "$RST"; hr
+    menu=()
+    for r in "${rows[@]}"; do
+      menu+=("$(printf '#%s  %s  %s(%s)' "$(printf '%s' "$r" | cut -f1)" "$(printf '%s' "$r" | cut -f2)" "$(printf '%s' "$r" | cut -f3)" "$(printf '%s' "$r" | cut -f4)")")
+    done
+    PS3="PR 번호(목록 순번)> "
+    select m in "${menu[@]}"; do [ -n "${m:-}" ] && { sel="${rows[$((REPLY-1))]}"; break; }; done
+  fi
+  num="$(printf '%s' "$sel" | cut -f1)"
+fi
+[ -z "$num" ] && { echo "선택 없음."; exit 1; }
+
+if [ "$WT" = 1 ]; then
+  top="$(git rev-parse --show-toplevel)"; repo="$(basename "$top")"
+  branch="pr/$num"
+  dir="$(cd "$top/.." && pwd)/${repo}-pr-${num}"
+  [ -e "$dir" ] && { echo "이미 있음: $dir — 그 안으로 진입."; cd "$dir" && exec "${SHELL:-bash}"; }
+  printf '   %sfetch%s pull/%s/head → %s\n' "$DIM" "$RST" "$num" "$branch"
+  git fetch origin "pull/$num/head:$branch"
+  git worktree add "$dir" "$branch"
+  printf '   %s→ %s%s%s  %s(exit 로 복귀)%s\n' "$GRN" "$BOLD" "$dir" "$RST" "$DIM" "$RST"
+  cd "$dir" && exec "${SHELL:-bash}"
+else
+  gh pr checkout "$num"
+fi

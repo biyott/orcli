@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# scratch — 임시 작업 폴더를 만들어 그 안에서 새 셸을 연다.
+#   scratch           타임스탬프 폴더를 만들어 진입 (exit 로 복귀)
+#   scratch <이름>    이름 붙인 스크래치로 진입/재진입
+#   scratch --git ..  진입 시 git init
+#   scratch ls        스크래치 목록
+#   scratch rm        오래된/고른 스크래치 정리(확인)
+#   scratch -h|--help 도움말
+# 기본 위치: ~/.scratch (SCRATCH_DIR 로 변경).  진입은 새 셸이라 exit 하면 원래 자리로.
+set -euo pipefail
+
+if [ -t 1 ]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; RST=$'\033[0m'
+  CYAN=$'\033[36m'; YEL=$'\033[33m'; GRN=$'\033[32m'; MAG=$'\033[35m'; RED=$'\033[31m'
+else
+  BOLD=; DIM=; RST=; CYAN=; YEL=; GRN=; MAG=; RED=
+fi
+hr() { printf '   %s──────────────────────────────────%s\n' "$DIM" "$RST"; }
+
+BASE="${SCRATCH_DIR:-$HOME/.scratch}"
+
+usage() {
+  printf '\n   %s%sscratch%s %s<명령>%s\n\n' "$BOLD" "$MAG" "$RST" "$CYAN" "$RST"
+  printf '   %s사용법%s\n' "$BOLD" "$RST"; hr
+  printf '     %sscratch%s          타임스탬프 폴더 만들어 진입\n' "$YEL" "$RST"
+  printf '     %sscratch %s<이름>%s   이름 스크래치로 진입/생성\n' "$YEL" "$CYAN" "$RST"
+  printf '     %sscratch --git%s    진입 시 git init\n' "$YEL" "$RST"
+  printf '     %sscratch ls%s       목록\n' "$YEL" "$RST"
+  printf '     %sscratch rm%s       정리(대화형)\n' "$YEL" "$RST"
+  printf '     %sscratch -h%s       이 도움말\n' "$YEL" "$RST"
+  printf '\n'; hr
+  printf '   %s위치: %s%s\n\n' "$DIM" "$BASE" "$RST"
+}
+
+GIT=0; name=""; sub=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help|help) usage; exit 0 ;;
+    --git) GIT=1 ;;
+    ls|list) sub=ls ;;
+    rm|clean) sub=rm ;;
+    -*) echo "알 수 없는 옵션: $1" >&2; exit 1 ;;
+    *) name="$1" ;;
+  esac
+  shift
+done
+
+mkdir -p "$BASE"
+
+enter() {
+  local d="$1"
+  [ "$GIT" = 1 ] && [ ! -d "$d/.git" ] && git init -q "$d"
+  printf '   %s→ %s%s%s  %s(exit 로 복귀)%s\n' "$GRN" "$BOLD" "$d" "$RST" "$DIM" "$RST"
+  cd "$d" && exec "${SHELL:-bash}"
+}
+
+case "$sub" in
+  ls)
+    shopt -s nullglob 2>/dev/null || true
+    dirs=("$BASE"/*/)
+    [ "${#dirs[@]}" -eq 0 ] && { echo "스크래치 없음: $BASE"; exit 0; }
+    printf '\n   %s스크래치%s   %s(%s)%s\n' "$BOLD" "$RST" "$DIM" "$BASE" "$RST"; hr
+    for d in "${dirs[@]}"; do
+      d="${d%/}"
+      printf '     %s%s%s\n' "$CYAN" "$(basename "$d")" "$RST"
+    done; printf '\n' ;;
+  rm)
+    shopt -s nullglob 2>/dev/null || true
+    dirs=("$BASE"/*/)
+    [ "${#dirs[@]}" -eq 0 ] && { echo "정리할 스크래치 없음."; exit 0; }
+    names=(); for d in "${dirs[@]}"; do names+=("$(basename "${d%/}")"); done
+    picked=()
+    if command -v fzf >/dev/null 2>&1; then
+      while IFS= read -r n; do picked+=("$n"); done < <(printf '%s\n' "${names[@]}" | fzf --multi --prompt="삭제할 스크래치(TAB 다중) > " --height=40% || true)
+    else
+      printf '\n   %s스크래치%s\n' "$BOLD" "$RST"; hr
+      i=1; for n in "${names[@]}"; do printf '     %s%d)%s %s\n' "$CYAN" "$i" "$RST" "$n"; i=$((i+1)); done
+      printf '   삭제할 번호(공백 구분, 전체=all): '; read -r nums
+      if [ "$nums" = all ]; then picked=("${names[@]}"); else
+        for x in $nums; do case "$x" in *[!0-9]*) continue ;; esac; idx=$((x-1)); [ "$idx" -ge 0 ] && [ "$idx" -lt "${#names[@]}" ] && picked+=("${names[$idx]}"); done
+      fi
+    fi
+    [ "${#picked[@]}" -eq 0 ] && { echo "선택 없음."; exit 0; }
+    printf '\n   삭제: %s%s%s\n' "$BOLD" "${picked[*]}" "$RST"
+    printf '   진행하려면 %syes%s 입력: ' "$YEL" "$RST"; read -r ans
+    [ "$ans" = yes ] || { echo "취소."; exit 0; }
+    for n in "${picked[@]}"; do rm -rf "${BASE:?}/$n" && printf '   %s✓%s %s\n' "$GRN" "$RST" "$n"; done ;;
+  *)
+    if [ -n "$name" ]; then
+      safe="$(printf '%s' "$name" | tr ' /' '--')"
+      enter "$BASE/$safe"
+    else
+      ts="$(date +%Y%m%d-%H%M%S)"
+      enter "$BASE/$ts"
+    fi ;;
+esac

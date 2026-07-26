@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# brsw — git 로컬 브랜치를 골라서 전환하고, 머지된 브랜치를 정리한다.
+#   brsw            대화형으로 브랜치 전환 (최근 커밋순, 현재 ● 표시)
+#   brsw <검색어>   매칭되는 브랜치로 바로 전환
+#   brsw ls         브랜치 목록
+#   brsw clean      이미 머지된 로컬 브랜치를 골라서(다중) 삭제
+#   brsw -h|--help  도움말
+set -euo pipefail
+
+if [ -t 1 ]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; RST=$'\033[0m'
+  CYAN=$'\033[36m'; YEL=$'\033[33m'; GRN=$'\033[32m'; MAG=$'\033[35m'; RED=$'\033[31m'
+else
+  BOLD=; DIM=; RST=; CYAN=; YEL=; GRN=; MAG=; RED=
+fi
+hr() { printf '   %s──────────────────────────────────%s\n' "$DIM" "$RST"; }
+
+in_repo() { git rev-parse --is-inside-work-tree >/dev/null 2>&1; }
+
+# 최근 커밋순 로컬 브랜치
+branches=()
+load_branches() {
+  branches=()
+  while IFS= read -r b; do branches+=("$b"); done < <(git for-each-ref --format='%(refname:short)' --sort=-committerdate refs/heads)
+  return 0
+}
+current() { git rev-parse --abbrev-ref HEAD 2>/dev/null || true; }
+
+list_branches() {
+  local cur; cur="$(current)"
+  for b in "${branches[@]}"; do
+    if [ "$b" = "$cur" ]; then printf '     %s%s%s  %s● 현재%s\n' "$BOLD" "$b" "$RST" "$GRN" "$RST"
+    else printf '     %s%s%s\n' "$CYAN" "$b" "$RST"; fi
+  done
+}
+
+usage() {
+  printf '\n   %s%sbrsw%s %s<명령>%s\n\n' "$BOLD" "$MAG" "$RST" "$CYAN" "$RST"
+  printf '   %s사용법%s\n' "$BOLD" "$RST"; hr
+  printf '     %sbrsw%s            골라서 전환\n' "$YEL" "$RST"
+  printf '     %sbrsw %s<검색어>%s   매칭 브랜치로 전환\n' "$YEL" "$CYAN" "$RST"
+  printf '     %sbrsw ls%s         목록\n' "$YEL" "$RST"
+  printf '     %sbrsw clean%s      머지된 브랜치 정리\n' "$YEL" "$RST"
+  printf '     %sbrsw -h%s         이 도움말\n' "$YEL" "$RST"
+  if in_repo; then load_branches; printf '\n   %s브랜치%s\n' "$BOLD" "$RST"; hr; list_branches; fi
+  printf '\n'; hr
+  printf '   %sgit switch/branch 래퍼%s\n\n' "$DIM" "$RST"
+}
+
+case "${1:-}" in -h|--help|help) usage; exit 0 ;; esac
+in_repo || { echo "git repo 안이 아님." >&2; exit 1; }
+
+cmd="${1:-}"
+case "$cmd" in
+  ls|list)
+    load_branches; printf '\n   %s브랜치%s\n' "$BOLD" "$RST"; hr; list_branches; printf '\n' ;;
+  clean)
+    cur="$(current)"
+    merged=()
+    while IFS= read -r b; do
+      b="${b#\* }"; b="$(printf '%s' "$b" | tr -d ' ')"
+      case "$b" in ''|"$cur"|main|master|develop) continue ;; esac
+      merged+=("$b")
+    done < <(git branch --merged)
+    [ "${#merged[@]}" -eq 0 ] && { echo "머지된(삭제 가능) 브랜치 없음."; exit 0; }
+    picked=()
+    if command -v fzf >/dev/null 2>&1; then
+      while IFS= read -r b; do picked+=("$b"); done < <(printf '%s\n' "${merged[@]}" | fzf --multi --prompt="삭제할 브랜치(TAB 다중) > " --height=40% || true)
+    else
+      printf '\n   %s머지된 브랜치%s\n' "$BOLD" "$RST"; hr
+      i=1; for b in "${merged[@]}"; do printf '     %s%d)%s %s\n' "$CYAN" "$i" "$RST" "$b"; i=$((i+1)); done
+      printf '   삭제할 번호(공백 구분, 전체=all): '; read -r nums
+      if [ "$nums" = all ]; then picked=("${merged[@]}"); else
+        for n in $nums; do case "$n" in *[!0-9]*) continue ;; esac; idx=$((n-1)); [ "$idx" -ge 0 ] && [ "$idx" -lt "${#merged[@]}" ] && picked+=("${merged[$idx]}"); done
+      fi
+    fi
+    [ "${#picked[@]}" -eq 0 ] && { echo "선택 없음."; exit 0; }
+    printf '\n   삭제 대상: %s%s%s\n' "$BOLD" "${picked[*]}" "$RST"
+    printf '   진행하려면 %syes%s 입력: ' "$YEL" "$RST"; read -r ans
+    [ "$ans" = yes ] || { echo "취소."; exit 0; }
+    for b in "${picked[@]}"; do
+      if git branch -d "$b" 2>/dev/null; then printf '   %s✓%s %s\n' "$GRN" "$RST" "$b"
+      else printf '   %s✗%s %s — 미머지? 강제삭제는 git branch -D\n' "$RED" "$RST" "$b"; fi
+    done ;;
+  *)
+    load_branches; cur="$(current)"
+    chosen=""
+    if [ -n "$cmd" ]; then
+      for b in "${branches[@]}"; do [ "$b" = "$cmd" ] && chosen="$b"; done
+      if [ -z "$chosen" ]; then
+        hits=(); for b in "${branches[@]}"; do case "$b" in *"$cmd"*) hits+=("$b") ;; esac; done
+        [ "${#hits[@]}" -eq 1 ] && chosen="${hits[0]}"
+        [ "${#hits[@]}" -eq 0 ] && { echo "매칭 브랜치 없음: $cmd" >&2; exit 1; }
+        [ "${#hits[@]}" -gt 1 ] && branches=("${hits[@]}")
+      fi
+    fi
+    if [ -z "$chosen" ]; then
+      if command -v fzf >/dev/null 2>&1; then
+        chosen=$(printf '%s\n' "${branches[@]}" | fzf --prompt="브랜치 > " --height=40%) || { echo "취소."; exit 1; }
+      else
+        PS3="브랜치 번호> "
+        select b in "${branches[@]}"; do [ -n "${b:-}" ] && { chosen="$b"; break; }; done
+      fi
+    fi
+    [ -z "${chosen:-}" ] && { echo "취소."; exit 1; }
+    [ "$chosen" = "$cur" ] && { echo "이미 현재 브랜치: $chosen"; exit 0; }
+    git switch "$chosen" ;;
+esac

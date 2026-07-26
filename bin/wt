@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# wt — git worktree 를 골라서 다룬다 (진입/생성/삭제).
+#   wt                대화형: worktree 골라 그 안에서 새 셸 (exit 로 복귀)
+#   wt <검색어>       이름/브랜치/경로가 매칭되는 worktree 로 진입
+#   wt ls|list        worktree 목록
+#   wt new <브랜치>   새 worktree 를 형제 폴더에 만들고 진입
+#   wt rm [검색어]    worktree 제거 (대화형 확인)
+#   wt path <검색어>  경로만 출력 (cd 스크립팅용:  cd "$(wt path foo)")
+#   wt -h|--help      도움말
+# 진입은 새 셸을 띄우는 방식이라 셸 설정 없이 동작한다 — exit 하면 원래 자리로 돌아온다.
+set -euo pipefail
+
+if [ -t 1 ]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; RST=$'\033[0m'
+  CYAN=$'\033[36m'; YEL=$'\033[33m'; GRN=$'\033[32m'; MAG=$'\033[35m'
+else
+  BOLD=; DIM=; RST=; CYAN=; YEL=; GRN=; MAG=
+fi
+hr() { printf '   %s──────────────────────────────────%s\n' "$DIM" "$RST"; }
+
+in_repo() { git rev-parse --is-inside-work-tree >/dev/null 2>&1; }
+
+# worktree 목록을 TSV(경로\t브랜치)로.  bash 3.2 호환.
+paths=(); branches=()
+load_worktrees() {
+  paths=(); branches=()
+  local p="" b=""
+  while IFS= read -r line; do
+    case "$line" in
+      worktree\ *) p="${line#worktree }" ;;
+      branch\ *)   b="${line#branch refs/heads/}" ;;
+      detached)    b="(detached)" ;;
+      "")          [ -n "$p" ] && { paths+=("$p"); branches+=("${b:-?}"); }; p=""; b="" ;;
+    esac
+  done < <(git worktree list --porcelain)
+  [ -n "$p" ] && { paths+=("$p"); branches+=("${b:-?}"); }
+  return 0
+}
+
+list_worktrees() {
+  local cur i; cur="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  for i in "${!paths[@]}"; do
+    if [ "${paths[$i]}" = "$cur" ]; then
+      printf '     %s%-24s%s %s%s%s  %s● 현재%s\n' "$BOLD" "${branches[$i]}" "$RST" "$DIM" "${paths[$i]}" "$RST" "$GRN" "$RST"
+    else
+      printf '     %s%-24s%s %s%s%s\n' "$CYAN" "${branches[$i]}" "$RST" "$DIM" "${paths[$i]}" "$RST"
+    fi
+  done
+}
+
+usage() {
+  printf '\n   %s%swt%s %s<명령>%s\n\n' "$BOLD" "$MAG" "$RST" "$CYAN" "$RST"
+  printf '   %s사용법%s\n' "$BOLD" "$RST"; hr
+  printf '     %swt%s              골라서 진입(새 셸, exit 로 복귀)\n' "$YEL" "$RST"
+  printf '     %swt %s<검색어>%s     매칭 worktree 로 진입\n' "$YEL" "$CYAN" "$RST"
+  printf '     %swt ls%s           목록\n' "$YEL" "$RST"
+  printf '     %swt new %s<브랜치>%s  새 worktree 생성 후 진입\n' "$YEL" "$CYAN" "$RST"
+  printf '     %swt rm %s[검색어]%s   worktree 제거\n' "$YEL" "$CYAN" "$RST"
+  printf '     %swt path %s<검색어>%s 경로만 출력\n' "$YEL" "$CYAN" "$RST"
+  printf '     %swt -h%s           이 도움말\n' "$YEL" "$RST"
+  if in_repo; then
+    load_worktrees
+    printf '\n   %sworktree%s\n' "$BOLD" "$RST"; hr; list_worktrees
+  fi
+  printf '\n'; hr
+  printf '   %sgit worktree 래퍼%s\n\n' "$DIM" "$RST"
+}
+
+# 검색어로 인덱스 찾기.  정확히 하나면 그 인덱스, 없거나 여럿이면 fzf/select.
+pick_index() {
+  local q="${1:-}" i hits=()
+  if [ -n "$q" ]; then
+    for i in "${!paths[@]}"; do
+      case "${branches[$i]}/${paths[$i]}" in *"$q"*) hits+=("$i") ;; esac
+    done
+    [ "${#hits[@]}" -eq 1 ] && { printf '%s' "${hits[0]}"; return; }
+    [ "${#hits[@]}" -eq 0 ] && { echo "매칭 worktree 없음: $q" >&2; return 1; }
+  else
+    for i in "${!paths[@]}"; do hits+=("$i"); done
+  fi
+  # 여럿 → 대화형 선택
+  local labels=() lbl chosen
+  for i in "${hits[@]}"; do labels+=("$i	${branches[$i]}	${paths[$i]}"); done
+  if command -v fzf >/dev/null 2>&1; then
+    chosen=$(printf '%s\n' "${labels[@]}" | fzf --with-nth=2,3 --delimiter='\t' --prompt="worktree > " --height=40%) || return 1
+  else
+    local menu=()
+    for lbl in "${labels[@]}"; do menu+=("$(printf '%s  %s' "$(printf '%s' "$lbl" | cut -f2)" "$(printf '%s' "$lbl" | cut -f3)")"); done
+    local PS3="worktree 번호> " sel n=0
+    select sel in "${menu[@]}"; do [ -n "${sel:-}" ] && { chosen="${labels[$((REPLY-1))]}"; break; }; done
+  fi
+  [ -z "${chosen:-}" ] && return 1
+  printf '%s' "$(printf '%s' "$chosen" | cut -f1)"
+}
+
+enter() {
+  local d="$1"
+  printf '   %s→ %s%s%s  %s(exit 로 복귀)%s\n' "$GRN" "$BOLD" "$d" "$RST" "$DIM" "$RST"
+  cd "$d" && exec "${SHELL:-bash}"
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  -h|--help|help) usage; exit 0 ;;
+esac
+in_repo || { echo "git repo 안이 아님." >&2; exit 1; }
+
+case "$cmd" in
+  ls|list)
+    load_worktrees; list_worktrees ;;
+  new)
+    branch="${2:-}"; [ -z "$branch" ] && { echo "브랜치명이 필요함:  wt new <브랜치>" >&2; exit 1; }
+    top="$(git rev-parse --show-toplevel)"; repo="$(basename "$top")"
+    dir="$(cd "$top/.." && pwd)/${repo}-$(printf '%s' "$branch" | tr '/' '-')"
+    [ -e "$dir" ] && { echo "이미 있음: $dir" >&2; exit 1; }
+    if git show-ref --verify --quiet "refs/heads/$branch"; then
+      git worktree add "$dir" "$branch"
+    else
+      git worktree add -b "$branch" "$dir"
+    fi
+    enter "$dir" ;;
+  rm)
+    load_worktrees
+    idx="$(pick_index "${2:-}")" || { echo "취소." >&2; exit 1; }
+    target="${paths[$idx]}"
+    cur="$(git rev-parse --show-toplevel)"
+    [ "$target" = "$cur" ] && { echo "현재 있는 worktree 는 제거 못함 — 다른 곳으로 이동 후 실행." >&2; exit 1; }
+    printf '   제거: %s%s%s (%s)\n' "$BOLD" "$target" "$RST" "${branches[$idx]}"
+    printf '   확실하면 %syes%s 입력: ' "$YEL" "$RST"; read -r ans
+    [ "$ans" = "yes" ] || { echo "취소."; exit 0; }
+    git worktree remove "$target" && printf '   %s✓%s 제거됨\n' "$GRN" "$RST" ;;
+  path)
+    load_worktrees
+    idx="$(pick_index "${2:-}")" || exit 1
+    printf '%s\n' "${paths[$idx]}" ;;
+  *)
+    load_worktrees
+    idx="$(pick_index "$cmd")" || { echo "취소." >&2; exit 1; }
+    enter "${paths[$idx]}" ;;
+esac

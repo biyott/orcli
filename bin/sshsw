@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# sshsw — ~/.ssh/config 의 Host 를 골라서 접속한다.
+#   sshsw                 대화형으로 Host 골라 접속
+#   sshsw <검색어>        매칭되는 Host 로 접속 (예: sshsw web)
+#   sshsw <검색어> -- ...  이후 인자는 ssh 에 그대로 넘김
+#   sshsw ls              Host 목록
+#   sshsw -h|--help       도움말
+# Include 지시자는 따라가지 않는다 — 메인 config 의 Host 별칭만 읽는다.
+set -euo pipefail
+
+if [ -t 1 ]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; RST=$'\033[0m'
+  CYAN=$'\033[36m'; YEL=$'\033[33m'; GRN=$'\033[32m'; MAG=$'\033[35m'
+else
+  BOLD=; DIM=; RST=; CYAN=; YEL=; GRN=; MAG=
+fi
+hr() { printf '   %s──────────────────────────────────%s\n' "$DIM" "$RST"; }
+
+CFG="${HOME}/.ssh/config"
+
+# 와일드카드 아닌 Host 별칭을, 나온 순서대로 중복 없이.
+list_hosts() {
+  [ -f "$CFG" ] || return 0
+  awk 'tolower($1)=="host" { for(i=2;i<=NF;i++) if($i !~ /[*?!]/) print $i }' "$CFG" | awk '!seen[$0]++'
+}
+
+usage() {
+  printf '\n   %s%ssshsw%s %s<명령>%s\n\n' "$BOLD" "$MAG" "$RST" "$CYAN" "$RST"
+  printf '   %s사용법%s\n' "$BOLD" "$RST"; hr
+  printf '     %ssshsw%s            골라서 접속\n' "$YEL" "$RST"
+  printf '     %ssshsw %s<검색어>%s   매칭 Host 로 접속\n' "$YEL" "$CYAN" "$RST"
+  printf '     %ssshsw ls%s         Host 목록\n' "$YEL" "$RST"
+  printf '     %ssshsw -h%s         이 도움말\n' "$YEL" "$RST"
+  printf '     %s· <검색어> 뒤 %s--%s 이후는 ssh 로 전달%s\n' "$DIM" "$RST" "$DIM" "$RST"
+  hosts=(); while IFS= read -r h; do hosts+=("$h"); done < <(list_hosts)
+  if [ "${#hosts[@]}" -gt 0 ]; then
+    printf '\n   %sHost%s   %s(%s)%s\n' "$BOLD" "$RST" "$DIM" "$CFG" "$RST"; hr
+    local i=1
+    for h in "${hosts[@]}"; do printf '     %s%d)%s %s\n' "$CYAN" "$i" "$RST" "$h"; i=$((i+1)); done
+  fi
+  printf '\n'; hr
+  printf '   %sssh %s%s 래퍼%s\n\n' "$DIM" "$CFG" "" "$RST"
+}
+
+# 인자 파싱: 플래그 / 검색어 / -- 이후 ssh 인자
+query=""; sshargs=(); rest=0
+posset=0
+while [ "$#" -gt 0 ]; do
+  if [ "$rest" = 1 ]; then sshargs+=("$1"); shift; continue; fi
+  case "$1" in
+    -h|--help|help) usage; exit 0 ;;
+    ls|list) LS=1 ;;
+    --) rest=1 ;;
+    -*) sshargs+=("$1") ;;                 # -p 22 같은 ssh 옵션은 그대로
+    *)  if [ "$posset" = 0 ]; then query="$1"; posset=1; else sshargs+=("$1"); fi ;;
+  esac
+  shift
+done
+
+hosts=(); while IFS= read -r h; do hosts+=("$h"); done < <(list_hosts)
+
+if [ "${LS:-0}" = 1 ]; then
+  [ "${#hosts[@]}" -eq 0 ] && { echo "config 에 Host 없음: $CFG" >&2; exit 1; }
+  printf '\n   %sHost%s\n' "$BOLD" "$RST"; hr
+  for h in "${hosts[@]}"; do printf '     %s\n' "$h"; done; printf '\n'
+  exit 0
+fi
+
+[ "${#hosts[@]}" -eq 0 ] && { echo "~/.ssh/config 에 Host 가 없다." >&2; exit 1; }
+
+# 검색어 → Host 하나
+choose_host() {
+  local q="$1" h hits=()
+  if [ -n "$q" ]; then
+    for h in "${hosts[@]}"; do [ "$h" = "$q" ] && { printf '%s' "$h"; return; } done
+    for h in "${hosts[@]}"; do case "$h" in *"$q"*) hits+=("$h") ;; esac; done
+    [ "${#hits[@]}" -eq 1 ] && { printf '%s' "${hits[0]}"; return; }
+    [ "${#hits[@]}" -eq 0 ] && { echo "매칭 Host 없음: $q" >&2; return 1; }
+  else
+    hits=("${hosts[@]}")
+  fi
+  local chosen
+  if command -v fzf >/dev/null 2>&1; then
+    chosen=$(printf '%s\n' "${hits[@]}" | fzf --prompt="ssh > " --height=40%) || return 1
+  else
+    local sel PS3="Host 번호> "
+    select sel in "${hits[@]}"; do [ -n "${sel:-}" ] && { chosen="$sel"; break; }; done
+  fi
+  [ -z "${chosen:-}" ] && return 1
+  printf '%s' "$chosen"
+}
+
+host="$(choose_host "$query")" || { echo "취소." >&2; exit 1; }
+printf '   %s→ ssh %s%s%s\n' "$GRN" "$BOLD" "$host" "$RST"
+if [ "${#sshargs[@]}" -gt 0 ]; then exec ssh "$host" "${sshargs[@]}"; else exec ssh "$host"; fi
