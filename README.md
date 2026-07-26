@@ -1,8 +1,17 @@
+<div align="center">
+
 # orcli 🐋
 
-> A small pod of personal command-line tools & configs. Copy-install into `~/.local/bin`.
->
-> 개인용 CLI 도구·설정 모음. `~/.local/bin`으로 **복사 설치**한다. 이름은 **orca + cli**.
+**개인용 CLI 도구 모음** — `~/.local/bin`으로 복사 설치하는 작고 단일 목적인 셸 도구들.
+이름은 **orca + cli**. 도구 하나하나가 pod(고래 떼)의 한 마리다.
+
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)&nbsp;&nbsp;[![shell](https://img.shields.io/badge/shell-bash%203.2%2B-89e051.svg)](#)
+
+**한국어** · [English](README.en.md)
+
+</div>
+
+---
 
 ## Install
 
@@ -21,7 +30,7 @@ install.sh           # 터미널이면 물어봄(기본 복사), 비대화형이
 
 | 방식 | repo 이동/삭제 | 갱신 |
 |------|----------------|------|
-| `--copy` | 자유(독립 복사본) | `git pull` 후 `install.sh` 재실행 |
+| `--copy` | 자유(독립 복사본) | `git pull` 후 `install.sh` 재실행 (또는 `orcli update`) |
 | `--link` | repo 위치 고정 | `git pull` 즉시 반영 |
 
 `~/.local/bin`이 `PATH`에 없으면 셸 설정에 추가하라고 안내한다:
@@ -30,7 +39,7 @@ install.sh           # 터미널이면 물어봄(기본 복사), 비대화형이
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Uninstall: `rm ~/.local/bin/<tool>`.
+제거: `rm ~/.local/bin/<tool>`.
 
 ## Tools
 
@@ -42,7 +51,7 @@ Uninstall: `rm ~/.local/bin/<tool>`.
 | [`gitundo`](bin/gitundo) | 자주 하는 git 되돌리기를 안전한 메뉴로 | `git`, `fzf`(선택) |
 | [`brsw`](bin/brsw) | git 로컬 브랜치 전환 + 머지된 브랜치 정리 | `git`, `fzf`(선택) |
 | [`prco`](bin/prco) | 열린 PR 골라 체크아웃 (`-w` 로 worktree) | `gh`, `git`, `fzf`(선택) |
-| [`sshsw`](bin/sshsw) | `~/.ssh/config` Host 골라서 접속 | `ssh`, `fzf`(선택) |
+| [`sshsw`](bin/sshsw) | `~/.ssh/config` Host 골라서 접속 (WSL이면 Windows 것도 병합) | `ssh`, `fzf`(선택) |
 | [`scratch`](bin/scratch) | 임시 작업 폴더 만들어 진입/정리 | — |
 | [`orcli`](bin/orcli) | 이 도구 모음 자체 관리 (list·update·doctor) | `git` |
 
@@ -132,7 +141,7 @@ sshsw --wsl|--win  한쪽 config 만 사용
 
 `~/.ssh/config`의 `Host` 별칭을 읽어 고른 뒤 `ssh`로 접속한다(와일드카드 `*`·`?` 제외). `sshsw <검색어> -- <ssh 인자>`로 뒤 인자를 그대로 넘긴다. `Include`는 따라가지 않는다.
 
-**WSL 자동 병합.** WSL에서 실행하면 Windows 사용자의 `~/.ssh/config`를 **자동으로 찾아**(NTUSER.DAT로 실사용자 판별, interop 있으면 `%USERPROFILE%`로 정확히) 같은 목록에 합친다 — 설정 파일에 손댈 필요 없다. 출처가 둘이면 이렇게 그룹으로 구분해 보여준다:
+**WSL 자동 병합.** WSL에서 실행하면 Windows 사용자의 `~/.ssh/config`를 **자동으로 찾아**(NTUSER.DAT로 실사용자 판별, interop 있으면 `%USERPROFILE%`로 정확히) 같은 목록에 합친다 — 설정 파일에 손댈 필요 없다. 출처가 둘이면 그룹으로 구분해 보여준다:
 
 ```
 ───── wsl ─────
