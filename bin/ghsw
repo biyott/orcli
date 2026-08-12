@@ -3,10 +3,12 @@
 #   ghsw               대화형 선택 (fzf 있으면 fuzzy, 없으면 번호 메뉴)
 #   ghsw <번호>        목록 N번째로 바로 전환 (예: ghsw 2)
 #   ghsw <계정명>      그 계정으로 바로 전환 (예: ghsw smnoh_gsenc)
+#   ghsw <계정:태그>   같은 계정의 특정 신원으로 전환 (예: ghsw smnoh_gsenc:personal)
 #   ghsw --local ...   이 전환의 git 신원을 repo-local로 적용(기본은 --global)
 #   ghsw --edit        신원 매핑 파일(~/.config/orcli/ghsw.conf) 편집
 #   ghsw -h|--help     도움말
-# 신원 매핑은 ~/.config/orcli/ghsw.conf 에서 읽는다 —  gh계정 | 이름 | 이메일 | [signingkey]
+# 신원 매핑은 ~/.config/orcli/ghsw.conf 에서 읽는다 —  gh계정[:태그] | 이름 | 이메일 | [signingkey]
+# 한 계정에 신원이 여러 개면 계정명 뒤에 :태그 를 붙여 줄을 나눈다.
 set -euo pipefail
 
 # 컬러 — stdout이 터미널일 때만(파이프·리다이렉트 시 plain)
@@ -40,10 +42,15 @@ edit_config() {
   if [ ! -f "$CONF" ]; then
     cat > "$CONF" <<'EOF'
 # ghsw 신원 매핑 — gh 계정을 바꿀 때 git user.name/email 을 함께 설정한다.
-# 형식:   gh계정 | 이름 | 이메일 | signingkey(선택)
+# 형식:   gh계정[:태그] | 이름 | 이메일 | signingkey(선택)
 # 줄 앞 #은 주석. 예:
 # smnoh_gsenc | Chris Noh | platdev@gsenc.com
 # biyott      | biyott    | 12345678+biyott@users.noreply.github.com
+#
+# 한 계정에 신원 여러 개 — 계정명 뒤에 :태그 로 줄을 나눈다. 위에서부터 순서대로 목록에 뜨고,
+# 태그 없이 'ghsw smnoh_gsenc' 하면 그 계정의 첫 줄이 쓰인다.
+# smnoh_gsenc:work     | Chris Noh | platdev@gsenc.com
+# smnoh_gsenc:personal | Chris Noh | chris@example.com
 EOF
   fi
   "${EDITOR:-vi}" "$CONF"
@@ -68,19 +75,23 @@ apply_identity() {
   printf '   %sgit 신원%s → %s%s%s <%s> %s(%s)%s\n' "$BOLD" "$RST" "$BOLD" "$name" "$RST" "$email" "$DIM" "$scope" "$RST"
 }
 
-# 계정 목록 — 번호=시안, 활성엔 초록 ● 현재, 매핑 있으면 dim → 이메일
-list_accounts() {
-  local i=1 a line email tag
-  for a in "${accounts[@]}"; do
-    tag=""
-    if line=$(identity_for "$a"); then
+# 'acct:tag' 에서 gh 계정 부분만
+acct_of() { printf '%s' "${1%%:*}"; }
+
+# 프로필 목록 — 번호=시안, 활성엔 초록 ● 현재, 매핑 있으면 dim → 이메일
+# 같은 계정에 신원이 여러 개면 gh 활성 계정만으로는 구분이 안 되므로 현재 git 이메일까지 본다.
+list_profiles() {
+  local i=1 p line email tag
+  for p in "${profiles[@]}"; do
+    tag=""; email=""
+    if line=$(identity_for "$p"); then
       IFS='|' read -r _ _ email _ <<<"$line"; email=$(trim "${email:-}")
       tag=$(printf '  %s→ %s%s' "$DIM" "$email" "$RST")
     fi
-    if [ "$a" = "$active" ]; then
-      printf '     %s%d)%s %s%s%s  %s● 현재%s%s\n' "$CYAN" "$i" "$RST" "$BOLD" "$a" "$RST" "$GRN" "$RST" "$tag"
+    if [ "$(acct_of "$p")" = "$active" ] && { [ -z "$email" ] || [ "$email" = "$cur_email" ]; }; then
+      printf '     %s%d)%s %s%s%s  %s● 현재%s%s\n' "$CYAN" "$i" "$RST" "$BOLD" "$p" "$RST" "$GRN" "$RST" "$tag"
     else
-      printf '     %s%d)%s %s%s\n' "$CYAN" "$i" "$RST" "$a" "$tag"
+      printf '     %s%d)%s %s%s\n' "$CYAN" "$i" "$RST" "$p" "$tag"
     fi
     i=$((i + 1))
   done
@@ -94,16 +105,17 @@ usage() {
   printf '   %s%sghsw%s %s<명령>%s\n\n' "$BOLD" "$MAG" "$RST" "$CYAN" "$RST"
   printf '   %s사용법%s\n' "$BOLD" "$RST"
   hr
-  printf '     %sghsw%s            대화형 선택기로 전환\n' "$YEL" "$RST"
-  printf '     %sghsw %s<번호>%s     목록 번호로 바로 전환\n' "$YEL" "$CYAN" "$RST"
-  printf '     %sghsw %s<이름>%s     계정명으로 바로 전환\n' "$YEL" "$CYAN" "$RST"
-  printf '     %sghsw --local%s     git 신원을 이 repo에만 적용 %s(기본: --global)%s\n' "$YEL" "$RST" "$DIM" "$RST"
-  printf '     %sghsw --edit%s      신원 매핑 파일 편집\n' "$YEL" "$RST"
-  printf '     %sghsw -h%s|%shelp%s    이 도움말\n' "$YEL" "$RST" "$YEL" "$RST"
-  if [ "${#accounts[@]}" -gt 0 ]; then
+  printf '     %sghsw%s              대화형 선택기로 전환\n' "$YEL" "$RST"
+  printf '     %sghsw %s<번호>%s       목록 번호로 바로 전환\n' "$YEL" "$CYAN" "$RST"
+  printf '     %sghsw %s<이름>%s       계정명으로 바로 전환\n' "$YEL" "$CYAN" "$RST"
+  printf '     %sghsw %s<계정:태그>%s  같은 계정의 다른 신원으로 전환\n' "$YEL" "$CYAN" "$RST"
+  printf '     %sghsw --local%s      git 신원을 이 repo에만 적용 %s(기본: --global)%s\n' "$YEL" "$RST" "$DIM" "$RST"
+  printf '     %sghsw --edit%s       신원 매핑 파일 편집\n' "$YEL" "$RST"
+  printf '     %sghsw -h%s|%shelp%s      이 도움말\n' "$YEL" "$RST" "$YEL" "$RST"
+  if [ "${#profiles[@]}" -gt 0 ]; then
     printf '\n   %s계정%s   %s(전환 시 매핑된 git 신원도 함께 설정)%s\n' "$BOLD" "$RST" "$DIM" "$RST"
     hr
-    list_accounts
+    list_profiles
   fi
   printf '\n'
   hr
@@ -133,7 +145,27 @@ done
 accounts=()
 while IFS= read -r line; do accounts+=("$line"); done < <(gh auth status 2>&1 | grep -oE 'account [A-Za-z0-9_-]+' | awk '{print $2}' | sort -u)
 active=$(gh auth status 2>&1 | grep -B2 'Active account: true' | grep -oE 'account [A-Za-z0-9_-]+' | awk '{print $2}' | head -1 || true)
+cur_email=$(git config user.email 2>/dev/null || true)
 
+# 프로필 = 전환 단위. conf에 'acct' 또는 'acct:태그' 줄이 있으면 줄마다 하나씩,
+# 매핑이 아예 없는 계정은 계정명 그대로 한 개.
+# bash 3.2 + set -u — 빈 배열 "${accounts[@]}" 전개가 죽으므로 루프를 감싼다
+profiles=()
+if [ "${#accounts[@]}" -gt 0 ]; then
+  for a in "${accounts[@]}"; do
+    found=0
+    if [ -f "$CONF" ]; then
+      while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in ''|\#*) continue ;; esac
+        key=$(trim "${line%%|*}")
+        [ "${key%%:*}" = "$a" ] && { profiles+=("$key"); found=1; }
+      done < "$CONF"
+    fi
+    [ "$found" = 0 ] && profiles+=("$a")
+  done
+fi
+
+# 도움말은 로그인 여부와 무관하게 보여준다 — 계정 0개면 usage가 목록만 건너뜀
 [ "${HELP:-0}" = 1 ] && { usage; exit 0; }
 
 if [ "${#accounts[@]}" -eq 0 ]; then
@@ -141,22 +173,25 @@ if [ "${#accounts[@]}" -eq 0 ]; then
   exit 1
 fi
 
-# 인자 해석: 번호 또는 계정명으로 바로 전환
+# 인자 해석: 번호 · 'acct:태그' · 계정명(그 계정의 첫 프로필)
 resolve_arg() {
-  local arg="$1"
+  local arg="$1" p
   if [[ "$arg" =~ ^[0-9]+$ ]]; then
     local i=$((arg - 1))
-    if [ "$i" -lt 0 ] || [ "$i" -ge "${#accounts[@]}" ]; then
-      echo "범위 밖 번호: $arg (1~${#accounts[@]})" >&2; exit 1
+    if [ "$i" -lt 0 ] || [ "$i" -ge "${#profiles[@]}" ]; then
+      echo "범위 밖 번호: $arg (1~${#profiles[@]})" >&2; exit 1
     fi
-    printf '%s' "${accounts[$i]}"
+    printf '%s' "${profiles[$i]}"
     return
   fi
-  for a in "${accounts[@]}"; do
-    [ "$a" = "$arg" ] && { printf '%s' "$a"; return; }
+  for p in "${profiles[@]}"; do
+    [ "$p" = "$arg" ] && { printf '%s' "$p"; return; }
+  done
+  for p in "${profiles[@]}"; do
+    [ "$(acct_of "$p")" = "$arg" ] && { printf '%s' "$p"; return; }
   done
   echo "그런 계정 없음: $arg" >&2
-  echo "가능: ${accounts[*]}" >&2
+  echo "가능: ${profiles[*]}" >&2
   exit 1
 }
 
@@ -164,10 +199,17 @@ chosen=""
 if [ "${#posargs[@]}" -ge 1 ]; then
   chosen=$(resolve_arg "${posargs[0]}")
 else
-  # 대화형 — 활성 계정엔 (현재) 표시
+  # 대화형 — 활성 신원엔 (현재) 표시. 라벨 첫 필드가 프로필 키(공백 없음).
   labels=()
-  for a in "${accounts[@]}"; do
-    if [ "$a" = "$active" ]; then labels+=("$a (현재)"); else labels+=("$a"); fi
+  for p in "${profiles[@]}"; do
+    email=""
+    if pline=$(identity_for "$p"); then
+      IFS='|' read -r _ _ email _ <<<"$pline"; email=$(trim "${email:-}")
+    fi
+    label="$p"
+    [ "$(acct_of "$p")" = "$active" ] && { [ -z "$email" ] || [ "$email" = "$cur_email" ]; } && label="$label (현재)"
+    [ -n "$email" ] && label="$label → $email"
+    labels+=("$label")
   done
   if command -v fzf >/dev/null 2>&1; then
     chosen=$(printf '%s\n' "${labels[@]}" | fzf --prompt="gh 계정 전환 > " --height=40% | awk '{print $1}')
@@ -181,9 +223,10 @@ fi
 
 [ -z "${chosen:-}" ] && { echo "선택 취소." >&2; exit 1; }
 
-if [ "$chosen" = "$active" ]; then
-  echo "이미 활성: $chosen"
+chosen_acct=$(acct_of "$chosen")
+if [ "$chosen_acct" = "$active" ]; then
+  echo "이미 활성: $chosen_acct"
 else
-  gh auth switch --user "$chosen"
+  gh auth switch --user "$chosen_acct"
 fi
 apply_identity "$chosen"

@@ -73,10 +73,19 @@ The account list is read live from `gh auth status` — add/remove accounts with
 **Switch git identity too.** Switching only the gh account is a trap: commits still get stamped with the previous identity. Right after switching, `ghsw` sets the mapped `git config user.name`/`user.email` (and optional `signingkey`). The mapping lives in `~/.config/orcli/ghsw.conf`:
 
 ```
-# gh-account | name | email | signingkey(optional)
+# gh-account[:tag] | name | email | signingkey(optional)
 smnoh_gsenc | Chris Noh | platdev@gsenc.com
 biyott      | biyott    | 12345+biyott@users.noreply.github.com
 ```
+
+**Several identities on one account.** Append `:tag` to the account name to split it across lines; each line shows up as its own entry.
+
+```
+smnoh_gsenc:work     | Chris Noh | platdev@gsenc.com
+smnoh_gsenc:personal | Chris Noh | chris@example.com
+```
+
+Pick one directly with `ghsw smnoh_gsenc:personal`; without a tag, `ghsw smnoh_gsenc` uses that account's first line. Since the gh account is the same, `gh auth switch` is a no-op and only the git identity changes. The `● 현재` marker goes on the line whose account is active in gh *and* whose email matches the current `git config user.email`.
 
 `ghsw --edit` creates and edits this file. Accounts with no mapping just switch gh and print a note. Default scope is `--global` (a gh account is machine-wide, so it fits); use `--local` to apply to one repo only.
 

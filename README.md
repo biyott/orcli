@@ -73,10 +73,19 @@ ghsw -h|help    도움말 + 계정 목록
 **git 신원 동시 전환.** gh 계정만 바꾸면 커밋은 이전 신원으로 찍히는 함정이 있다. `ghsw`는 계정 전환 직후 매핑된 `git config user.name`/`user.email`(및 선택 `signingkey`)을 자동으로 설정한다. 매핑은 `~/.config/orcli/ghsw.conf`에 둔다:
 
 ```
-# gh계정 | 이름 | 이메일 | signingkey(선택)
+# gh계정[:태그] | 이름 | 이메일 | signingkey(선택)
 smnoh_gsenc | Chris Noh | platdev@gsenc.com
 biyott      | biyott    | 12345+biyott@users.noreply.github.com
 ```
+
+**한 계정에 신원 여러 개.** 계정명 뒤에 `:태그`를 붙여 줄을 나누면 각 줄이 목록에 따로 뜬다.
+
+```
+smnoh_gsenc:work     | Chris Noh | platdev@gsenc.com
+smnoh_gsenc:personal | Chris Noh | chris@example.com
+```
+
+`ghsw smnoh_gsenc:personal`로 바로 고르고, 태그 없이 `ghsw smnoh_gsenc`면 그 계정의 첫 줄이 쓰인다. gh 계정이 같으면 `gh auth switch`는 건너뛰고 git 신원만 갈린다. 목록의 `● 현재`는 gh 활성 계정 + 현재 `git config user.email`이 둘 다 맞는 줄에 붙는다.
 
 `ghsw --edit`로 이 파일을 만들고 편집한다. 매핑이 없는 계정은 gh만 전환하고 안내만 한다. 기본 scope는 `--global`(gh 계정이 머신 전역이라 결이 맞음), 특정 repo에만 적용하려면 `--local`.
 
