@@ -65,6 +65,7 @@ ghsw <n>        switch to list item N        (e.g. ghsw 2)
 ghsw <name>     switch to that account       (e.g. ghsw smnoh)
 ghsw --local    apply the git identity repo-local for this switch (default: --global)
 ghsw --edit     edit the identity mapping file
+ghsw --emit-env shell-wrapper mode — only GH_TOKEN export/unset lines on stdout
 ghsw -h|help    help + account list
 ```
 
@@ -88,6 +89,25 @@ smnoh_gsenc:personal | Chris Noh | chris@example.com
 Pick one directly with `ghsw smnoh_gsenc:personal`; without a tag, `ghsw smnoh_gsenc` uses that account's first line. Since the gh account is the same, `gh auth switch` is a no-op and only the git identity changes. The `● 현재` marker goes on the line whose account is active in gh *and* whose email matches the current `git config user.email`.
 
 `ghsw --edit` creates and edits this file. Accounts with no mapping just switch gh and print a note. Default scope is `--global` (a gh account is machine-wide, so it fits); use `--local` to apply to one repo only.
+
+**Per-profile `GH_TOKEN` (optional).** If `GH_TOKEN` (a PAT) is pinned in your environment, `gh` prefers it over the keyring and `gh auth switch` effectively does nothing. Put a source in the 5th `token` column and switching to that profile changes `GH_TOKEN` too. Leave the signingkey column empty. Two sources:
+
+- `keychain:<service>` — macOS Keychain (`security find-generic-password -s <service> -w`). **Preferred.**
+- `file:<path>` — first line of a plain file (`~` and `$HOME` expanded). Simple. Convention: `~/.config/orcli/tokens/<account>.<tag>`.
+
+```
+smnoh_gsenc:admin | Chris Noh | platdev@gsenc.com | | keychain:orcli-ghsw-smnoh_gsenc
+smnoh_gsenc:file  | Chris Noh | platdev@gsenc.com | | file:~/.config/orcli/tokens/smnoh_gsenc.file
+biyott            | biyott    | 12345+biyott@users.noreply.github.com
+```
+
+**About `file:`.** The file must be `chmod 600` (otherwise `ghsw` warns but still reads it). Keep it out of any git repo, and do not `source`/export it from shell startup files like `.zshenv`/`.zshrc` — `ghsw` reads it itself. Missing, empty or unreadable behaves like a `keychain:` failure: warning + `GH_TOKEN` unset.
+
+- Switching to a profile **with** a token column → normal switch + git identity, then it emits `export GH_TOKEN=…`. **Without** one → `unset GH_TOKEN GITHUB_TOKEN`.
+- A child process can't change the parent shell's env, so this needs a shell function wrapper. Add the line `install.sh` prints to `~/.zshrc` (or `~/.bashrc`): `ghsw() { local o; o=$(command ghsw --emit-env "$@") || return $?; eval "$o"; }`. Without the wrapper the script still switches the gh account + git identity as before (tokens are only hinted).
+- The token value is never printed to the terminal — it goes out only on `--emit-env`'s stdout (the eval channel); all human-readable output goes to stderr.
+- **Guard:** if `GH_TOKEN`/`GITHUB_TOKEN` is set in the incoming env, `ghsw` strips it for its own `gh` calls (same as `env -u`) so it switches against the keyring, and — when run without the wrapper — warns that the parent env var will keep overriding `gh`.
+- A 401 on the token prints `token expired?` and unsets `GH_TOKEN` (so a dead token doesn't shadow the keyring account). Same when the keychain read fails.
 
 ### `wt`
 

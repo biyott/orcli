@@ -6,13 +6,24 @@
 #   ghsw <계정:태그>   같은 계정의 특정 신원으로 전환 (예: ghsw smnoh_gsenc:personal)
 #   ghsw --local ...   이 전환의 git 신원을 repo-local로 적용(기본은 --global)
 #   ghsw --edit        신원 매핑 파일(~/.config/orcli/ghsw.conf) 편집
+#   ghsw --emit-env .. 셸 래퍼용 — stdout엔 export/unset GH_TOKEN 줄만, 사람용 출력은 stderr
 #   ghsw -h|--help     도움말
-# 신원 매핑은 ~/.config/orcli/ghsw.conf 에서 읽는다 —  gh계정[:태그] | 이름 | 이메일 | [signingkey]
+# 신원 매핑은 ~/.config/orcli/ghsw.conf 에서 읽는다 —  gh계정[:태그] | 이름 | 이메일 | [signingkey] | [token]
 # 한 계정에 신원이 여러 개면 계정명 뒤에 :태그 를 붙여 줄을 나눈다.
+# token 칼럼(keychain:<서비스명> | file:<경로>)이 있는 프로필은 전환 시 GH_TOKEN을 export — 셸 래퍼(--emit-env) 필요.
 set -euo pipefail
 
-# 컬러 — stdout이 터미널일 때만(파이프·리다이렉트 시 plain)
-if [ -t 1 ]; then
+# --emit-env 면 stdout이 eval 채널(파이프)이므로 컬러 판정은 stderr 기준
+emit=0
+for a in "$@"; do [ "$a" = --emit-env ] && emit=1; done
+
+# 환경의 GH_TOKEN/GITHUB_TOKEN은 gh가 키링보다 우선해 계정 전환을 막는다 — 이 프로세스에선 걷어내고
+# (env -u 와 동일, 부모 셸엔 영향 없음) 아래에서 경고만 한다.
+had_env_token=0
+if [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then had_env_token=1; unset GH_TOKEN GITHUB_TOKEN; fi
+
+# 컬러 — 출력 대상이 터미널일 때만(파이프·리다이렉트 시 plain)
+if [ -t "$((emit ? 2 : 1))" ]; then
   BOLD=$'\033[1m'; DIM=$'\033[2m'; RST=$'\033[0m'
   CYAN=$'\033[36m'; YEL=$'\033[33m'; GRN=$'\033[32m'; MAG=$'\033[35m'
 else
@@ -42,7 +53,7 @@ edit_config() {
   if [ ! -f "$CONF" ]; then
     cat > "$CONF" <<'EOF'
 # ghsw 신원 매핑 — gh 계정을 바꿀 때 git user.name/email 을 함께 설정한다.
-# 형식:   gh계정[:태그] | 이름 | 이메일 | signingkey(선택)
+# 형식:   gh계정[:태그] | 이름 | 이메일 | signingkey(선택) | token(선택)
 # 줄 앞 #은 주석. 예:
 # smnoh_gsenc | Chris Noh | platdev@gsenc.com
 # biyott      | biyott    | 12345678+biyott@users.noreply.github.com
@@ -51,6 +62,14 @@ edit_config() {
 # 태그 없이 'ghsw smnoh_gsenc' 하면 그 계정의 첫 줄이 쓰인다.
 # smnoh_gsenc:work     | Chris Noh | platdev@gsenc.com
 # smnoh_gsenc:personal | Chris Noh | chris@example.com
+#
+# token 칼럼 — 그 프로필로 전환할 때 GH_TOKEN(PAT)을 같이 export. signingkey 칸은 비워 둔다.
+#   keychain:<서비스명>  macOS 키체인 (`security find-generic-password -s <서비스명> -w`) — 권장
+#   file:<경로>          평문 파일 첫 줄 (~ 와 $HOME 전개). 간단하지만 chmod 600 필수,
+#                        git repo·셸 시작 파일(.zshenv 등) 밖에 두고 source 하지 말 것 — ghsw가 직접 읽는다.
+# 셸 래퍼(install.sh가 안내)가 있어야 부모 셸에 적용된다. token 없는 프로필로 가면 GH_TOKEN을 unset.
+# smnoh_gsenc:admin | Chris Noh | platdev@gsenc.com | | keychain:orcli-ghsw-smnoh_gsenc
+# smnoh_gsenc:admin | Chris Noh | platdev@gsenc.com | | file:~/.config/orcli/tokens/smnoh_gsenc.admin
 EOF
   fi
   "${EDITOR:-vi}" "$CONF"
@@ -63,7 +82,7 @@ apply_identity() {
     printf '   %s신원 매핑 없음%s — %sghsw --edit%s 로 %s 추가\n' "$DIM" "$RST" "$YEL" "$RST" "$acct"
     return 0
   fi
-  IFS='|' read -r _ name email key <<<"$line"
+  IFS='|' read -r _ name email key _ <<<"$line"
   name=$(trim "$name"); email=$(trim "$email"); key=$(trim "${key:-}")
   if [ "$scope" = local ] && ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "  --local 인데 git repo 안이 아님 — 신원 적용 건너뜀" >&2
@@ -73,6 +92,65 @@ apply_identity() {
   git config "--$scope" user.email "$email"
   [ -n "$key" ] && git config "--$scope" user.signingkey "$key"
   printf '   %sgit 신원%s → %s%s%s <%s> %s(%s)%s\n' "$BOLD" "$RST" "$BOLD" "$name" "$RST" "$email" "$DIM" "$scope" "$RST"
+}
+
+# 프로필의 token 칼럼 원문 (없으면 빈 문자열)
+token_src() {
+  local line src
+  line=$(identity_for "$1") || return 0
+  IFS='|' read -r _ _ _ _ src <<<"$line"
+  trim "${src:-}"
+}
+
+# file:<경로> 토큰 읽기 — 첫 줄만, 값은 stdout(호출부가 캡처)으로만. 경고·사유는 stderr.
+# 못 읽으면(없음·빈 파일·권한) 1. 모드가 600/400이 아니거나 소유자가 내가 아니면 경고만 하고 계속 쓴다.
+read_token_file() {
+  local p="$1" st mode owner tok
+  case "$p" in
+    '~'|'~/'*) p="$HOME${p#\~}" ;;
+    '$HOME'*)  p="$HOME${p#\$HOME}" ;;
+  esac
+  if [ ! -f "$p" ] || [ ! -r "$p" ]; then
+    printf '   %s⚠ 토큰 파일 없음/읽기 불가: %s%s\n' "$YEL" "$p" "$RST" >&2; return 1
+  fi
+  st=$(stat -c '%a %u' "$p" 2>/dev/null || stat -f '%Lp %u' "$p" 2>/dev/null) || st=""
+  mode=${st%% *}; owner=${st##* }
+  if [ -n "$st" ] && { { [ "$mode" != 600 ] && [ "$mode" != 400 ]; } || [ "$owner" != "$(id -u)" ]; }; then
+    printf '   %s⚠ 토큰 파일 권한/소유자 이상(%s, uid %s) — chmod 600 %s%s\n' "$YEL" "$mode" "$owner" "$p" "$RST" >&2
+  fi
+  tok=$(head -n 1 "$p" 2>/dev/null) || tok=""
+  tok=${tok%$'\r'}; tok=$(trim "$tok")
+  if [ -z "$tok" ]; then
+    printf '   %s⚠ 토큰 파일이 비어 있음: %s%s\n' "$YEL" "$p" "$RST" >&2; return 1
+  fi
+  printf '%s' "$tok"
+}
+
+# 토큰을 읽어 검증하고 export 줄을 eval 채널(fd 3)로만 내보낸다 — 터미널엔 값을 절대 찍지 않는다.
+# 읽기 실패·401이면 unset을 내보내 이전 프로필의 토큰이 남지 않게 한다.
+emit_token() {
+  local acct="$1" src="$2" tok="" out
+  case "$src" in
+    keychain:?*) tok=$(security find-generic-password -s "${src#keychain:}" -w 2>/dev/null) || tok="" ;;
+    file:?*)     tok=$(read_token_file "${src#file:}") || tok="" ;;
+    *) printf '   %s⚠ token 소스 미지원: %s (keychain:<서비스명> | file:<경로>)%s\n' "$YEL" "$src" "$RST" >&2 ;;
+  esac
+  if [ -z "$tok" ]; then
+    printf '   %s⚠ %s 토큰을 못 읽음 — GH_TOKEN unset, gh는 키링 계정을 쓴다%s\n' "$YEL" "$src" "$RST" >&2
+    printf 'unset GH_TOKEN GITHUB_TOKEN\n' >&3
+    return 0
+  fi
+  if out=$(GH_TOKEN="$tok" gh api user -q .login 2>&1); then
+    [ "$out" = "$acct" ] || printf '   %s⚠ 토큰 소유자(%s) ≠ 계정(%s)%s\n' "$YEL" "$out" "$acct" "$RST" >&2
+  elif grep -qE 'HTTP 401|Bad credentials' <<<"$out"; then
+    printf '   %s⚠ %s 토큰 401 — token expired? 갱신 후 키체인 값 교체 · GH_TOKEN unset%s\n' "$YEL" "$acct" "$RST" >&2
+    printf 'unset GH_TOKEN GITHUB_TOKEN\n' >&3
+    return 0
+  else
+    printf '   %s⚠ 토큰 검증 못함(네트워크?) — 그대로 export%s\n' "$YEL" "$RST" >&2
+  fi
+  printf 'export GH_TOKEN=%q\n' "$tok" >&3
+  printf '   %sGH_TOKEN%s → %s %s(%s)%s\n' "$BOLD" "$RST" "$acct" "$DIM" "${src%%:*}" "$RST"
 }
 
 # 'acct:tag' 에서 gh 계정 부분만
@@ -111,6 +189,7 @@ usage() {
   printf '     %sghsw %s<계정:태그>%s  같은 계정의 다른 신원으로 전환\n' "$YEL" "$CYAN" "$RST"
   printf '     %sghsw --local%s      git 신원을 이 repo에만 적용 %s(기본: --global)%s\n' "$YEL" "$RST" "$DIM" "$RST"
   printf '     %sghsw --edit%s       신원 매핑 파일 편집\n' "$YEL" "$RST"
+  printf '     %sghsw --emit-env%s   셸 래퍼용: GH_TOKEN export/unset 줄을 stdout으로 %s(token 칼럼 프로필)%s\n' "$YEL" "$RST" "$DIM" "$RST"
   printf '     %sghsw -h%s|%shelp%s      이 도움말\n' "$YEL" "$RST" "$YEL" "$RST"
   if [ "${#profiles[@]}" -gt 0 ]; then
     printf '\n   %s계정%s   %s(전환 시 매핑된 git 신원도 함께 설정)%s\n' "$BOLD" "$RST" "$DIM" "$RST"
@@ -132,12 +211,16 @@ while [ "$#" -gt 0 ]; do
     --local)  scope=local ;;
     --global) scope=global ;;
     --edit|--config) do_edit=1 ;;
+    --emit-env) emit=1 ;;
     --) shift; while [ "$#" -gt 0 ]; do posargs+=("$1"); shift; done; break ;;
     -*) echo "알 수 없는 옵션: $1" >&2; exit 1 ;;
     *)  posargs+=("$1") ;;
   esac
   shift
 done
+
+# --emit-env: 원래 stdout을 fd 3(eval 채널)으로 빼두고, 이후 모든 사람용 출력은 stderr로
+[ "$emit" = 1 ] && exec 3>&1 1>&2
 
 [ "${do_edit:-0}" = 1 ] && { edit_config; exit 0; }
 
@@ -171,6 +254,12 @@ fi
 if [ "${#accounts[@]}" -eq 0 ]; then
   echo "gh 로그인 계정 없음. 먼저 'gh auth login'." >&2
   exit 1
+fi
+
+# 래퍼 없이 실행했을 때만 경고 — 래퍼(--emit-env)는 아래에서 export/unset 으로 부모 env를 바로잡는다
+if [ "$had_env_token" = 1 ] && [ "$emit" = 0 ]; then
+  printf '   %s⚠ GH_TOKEN/GITHUB_TOKEN 이 환경에 설정됨%s — gh는 키링보다 이 값을 우선한다.\n' "$YEL" "$RST" >&2
+  printf '     ghsw는 키링 기준으로 전환하지만 이 셸의 gh는 %sunset GH_TOKEN GITHUB_TOKEN%s 전까지 계속 덮어쓴다 (셸 래퍼: install.sh 참고)\n' "$BOLD" "$RST" >&2
 fi
 
 # 인자 해석: 번호 · 'acct:태그' · 계정명(그 계정의 첫 프로필)
@@ -230,3 +319,15 @@ else
   gh auth switch --user "$chosen_acct"
 fi
 apply_identity "$chosen"
+
+# 토큰 — 칼럼 있으면 export, 없으면 unset. 평문 실행(래퍼 없음)이면 부모 env를 못 바꾸므로 안내만.
+src=$(token_src "$chosen")
+if [ "$emit" = 1 ]; then
+  if [ -n "$src" ]; then
+    emit_token "$chosen_acct" "$src"
+  else
+    printf 'unset GH_TOKEN GITHUB_TOKEN\n' >&3
+  fi
+elif [ -n "$src" ]; then
+  printf '   %sGH_TOKEN 프로필%s — 부모 셸엔 래퍼로만 적용됨: %seval "$(ghsw --emit-env %s)"%s\n' "$BOLD" "$RST" "$YEL" "$chosen" "$RST"
+fi

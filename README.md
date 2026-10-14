@@ -65,6 +65,7 @@ ghsw <번호>     목록 번호로 바로 전환   (예: ghsw 2)
 ghsw <이름>     계정명으로 바로 전환    (예: ghsw smnoh)
 ghsw --local    이 전환의 git 신원을 repo-local로 적용 (기본: --global)
 ghsw --edit     신원 매핑 파일 편집
+ghsw --emit-env 셸 래퍼용 — GH_TOKEN export/unset 줄만 stdout으로
 ghsw -h|help    도움말 + 계정 목록
 ```
 
@@ -88,6 +89,25 @@ smnoh_gsenc:personal | Chris Noh | chris@example.com
 `ghsw smnoh_gsenc:personal`로 바로 고르고, 태그 없이 `ghsw smnoh_gsenc`면 그 계정의 첫 줄이 쓰인다. gh 계정이 같으면 `gh auth switch`는 건너뛰고 git 신원만 갈린다. 목록의 `● 현재`는 gh 활성 계정 + 현재 `git config user.email`이 둘 다 맞는 줄에 붙는다.
 
 `ghsw --edit`로 이 파일을 만들고 편집한다. 매핑이 없는 계정은 gh만 전환하고 안내만 한다. 기본 scope는 `--global`(gh 계정이 머신 전역이라 결이 맞음), 특정 repo에만 적용하려면 `--local`.
+
+**프로필별 `GH_TOKEN` (선택).** 환경에 `GH_TOKEN`(PAT)이 고정돼 있으면 `gh`는 키링보다 그 값을 우선해서 `gh auth switch`가 사실상 먹히지 않는다. conf의 5번째 칼럼 `token`에 소스를 적으면 그 프로필로 전환할 때 `GH_TOKEN`도 같이 바꾼다. signingkey 칸은 비워 둔다. 소스는 두 가지:
+
+- `keychain:<서비스명>` — macOS 키체인(`security find-generic-password -s <서비스명> -w`). **권장.**
+- `file:<경로>` — 평문 파일의 첫 줄(`~`·`$HOME` 전개). 간단하다. 관례 위치는 `~/.config/orcli/tokens/<계정>.<태그>`.
+
+```
+smnoh_gsenc:admin | Chris Noh | platdev@gsenc.com | | keychain:orcli-ghsw-smnoh_gsenc
+smnoh_gsenc:file  | Chris Noh | platdev@gsenc.com | | file:~/.config/orcli/tokens/smnoh_gsenc.file
+biyott            | biyott    | 12345+biyott@users.noreply.github.com
+```
+
+**`file:` 주의.** 파일은 `chmod 600`이어야 한다(아니면 `ghsw`가 경고하고 그래도 읽는다). git repo 안에 두지 말고, `.zshenv`·`.zshrc` 같은 셸 시작 파일에서 `source`/export 하지 않는다 — 읽는 건 `ghsw`다. 없음·빈 파일·읽기 불가면 `keychain:` 실패와 같게 경고 + `GH_TOKEN` unset.
+
+- token 칼럼이 **있는** 프로필로 전환 → 일반 전환 + git 신원 후 `export GH_TOKEN=…`을 내보낸다. **없는** 프로필 → `unset GH_TOKEN GITHUB_TOKEN`.
+- 자식 프로세스는 부모 셸의 env를 못 바꾸므로 셸 함수 래퍼가 필요하다. `install.sh`가 안내하는 한 줄을 `~/.zshrc`(또는 `~/.bashrc`)에 넣는다: `ghsw() { local o; o=$(command ghsw --emit-env "$@") || return $?; eval "$o"; }`. 래퍼 없이도 스크립트는 gh 계정 + git 신원 전환까지는 그대로 동작한다(토큰은 안내만).
+- 토큰 값은 터미널에 찍히지 않는다 — `--emit-env`의 stdout(eval 채널)로만 나가고, 사람용 출력은 모두 stderr다.
+- **가드:** 들어온 환경에 `GH_TOKEN`/`GITHUB_TOKEN`이 있으면 `ghsw`는 자기 `gh` 호출에서 이를 걷어내(`env -u`와 동일) 키링 기준으로 전환하고, 래퍼 없이 실행했다면 부모 env가 계속 `gh`를 덮어쓴다고 경고한다.
+- 토큰이 401이면 `token expired?`를 안내하고 `GH_TOKEN`을 unset한다(만료 토큰이 키링 계정을 가리지 않게). 키체인에서 못 읽을 때도 같다.
 
 ### `wt`
 

@@ -98,6 +98,14 @@ case ":$PATH:" in
     ;;
 esac
 
+# ghsw shell wrapper — a child process can't change the parent's GH_TOKEN, so the
+# optional token column (see README) needs this function in your shell rc.
+if [ -f "$repo/bin/ghsw" ]; then
+  printf '\n   %sghsw%s  to switch GH_TOKEN per profile, add to ~/.zshrc (or ~/.bashrc):\n' "$BOLD" "$RST"
+  printf '       ghsw() { local o; o=$(command ghsw --emit-env "$@") || return $?; eval "$o"; }\n'
+  printf '   %sthe plain script keeps working without it (gh account + git identity only)%s\n' "$DIM" "$RST"
+fi
+
 # optional deps
 command -v gh  >/dev/null 2>&1 || printf '   %s· ghsw needs GitHub CLI (gh): https://cli.github.com%s\n' "$DIM" "$RST"
 command -v fzf >/dev/null 2>&1 || printf '   %s· fzf enables fuzzy pickers across the pod (optional)%s\n' "$DIM" "$RST"
